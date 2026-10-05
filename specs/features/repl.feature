@@ -1,8 +1,9 @@
 Feature: The REPL session
 
   The LLM user reaches the system through the REPL, like any other user. The
-  session protocol is fixed; the first-cut response is a deterministic local
-  stub until the transport extension lands.
+  session protocol is fixed. These host-level scenarios stand in a deterministic
+  caller for the provider so the transcript stays assertable; the entry's
+  end-to-end test exercises the real exchange.
 
   Rule: The session protocol
 

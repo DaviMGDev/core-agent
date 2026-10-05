@@ -1,7 +1,7 @@
 ---
 type: spec
 title: "provider-manager — Plugin Specification"
-description: "Manages AI providers: registration, validation, lookup, and listing; names the upstream ABI extension its transport needs."
+description: "Manages AI providers: registration, validation, lookup, listing of served models, and the endpoint/model mapping model-manager uses for calls."
 tags: [spec, plugin]
 sections: [context, semantics, transport, abi, conformance, non-goals, decisions]
 created: "2026-10-05"
@@ -13,74 +13,84 @@ updated: "2026-10-05"
 ## Context
 
 provider-manager owns the provider side of the system: it stores AI providers
-(name, endpoint, credential reference), validates them, keeps a stable order,
-and serves lookups. It provides the key `provider-registry` and injects
-nothing.
+(name, endpoint, credential reference, served models), validates them, keeps a
+stable order, and serves lookups and the model-to-provider mapping. It
+provides the key `provider-registry` and injects nothing.
 
-Calling a provider needs HTTP. The current kernel ABI has no network import, so
-— per the charter's default — this spec answers the gap with an upstream
-proposal instead of a local workaround. The first cut implements management
-semantics only.
+The kernel now exposes the network through the loader's host-mediated
+transport, so a chat turn reaches a provider. provider-manager stays
+management-only: model-manager performs the exchange, resolving the concrete
+model to an endpoint through the registry this plugin publishes.
 
 ## Semantics
 
-- A provider is `{name, endpoint, credential}`:
+- A provider is `{name, endpoint, credential, models}`:
   - `name` is non-empty and unique in the registry;
   - `endpoint` is an absolute `http` or `https` URL with a host;
   - `credential` is a non-secret reference (`env:VAR` style), never a literal
-    secret in the payload.
+    secret in the payload, substituted host-side at request time;
+  - `models` lists the concrete model names the provider serves, in no
+    particular order; it may be empty.
 - `Register` validates and appends; a duplicate name is refused with an error
   and the registry is unchanged.
 - `List` returns providers in insertion order; `Get` and `Remove` address by
   name.
+- `ProviderFor` returns the first provider, in insertion order, that lists
+  the given concrete model.
 - `ParseConfig` reads `{"providers":[...]}`; the guest registers every
   provider at activation and fails activation on the first invalid one.
 
 ## Transport
 
-The first cut does not perform requests. The transport needs a kernel
-capability, proposed upstream to memento (not patched here):
+The kernel exposes the capability this plugin once proposed:
+`memento.http_request` and its `http_response_len`/`http_response` pair, with
+host-owned egress policy and host-substituted credential references. The
+proposal is no longer pending; the ABI is documented in memento's
+`plugins/wasm/specs/`.
 
-- **Proposal — `memento.http_request`.** The guest writes a JSON request
-  `{method, url, headers, body}` into its memory; the host performs the
-  request and writes a JSON response `{status, headers, body}` back; the call
-  returns `0` on a completed exchange and non-zero on transport failure. The
-  host owns egress policy (timeouts, allow-lists).
-
-Until the proposal lands, a chat turn cannot reach a provider; that is a
-declared limitation, not a silent one.
+provider-manager does not perform requests. It publishes the registry that
+model-manager reads over `memento.get` (the injected `provider-registry`
+document) to resolve a model to an endpoint and a credential reference. The
+request itself belongs to the responder, which keeps this plugin a pure
+management surface.
 
 ## ABI
 
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
-  `memory` (no operation handler: transport is deferred).
+  `memory` (no operation handler: provider-manager is a pure management
+  surface).
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
   `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
   `memento.register_effect`, `memento.log`.
 - Declares: provides `provider-registry`; injects nothing.
 - Binds: `provider-registry` ← the activation payload (the provider
   configuration document), as a tracked, revertible registration.
-- Payload: JSON `{"providers":[{"name","endpoint","credential"}]}`.
+- Payload: JSON `{"providers":[{"name","endpoint","credential","models"}]}`.
 - Effect inverse on unload: `provider-manager: providers released`.
 
 ## Conformance
 
 Colocated Go tests cover registration, validation, duplicate refusal, listing
-order, lookup, removal, and config parsing. The guest path is exercised by the
-`cmd/core-agent` end-to-end test. Scenarios:
+order, lookup, removal, the model-to-provider mapping, and config parsing. The
+guest path is exercised by the `cmd/core-agent` end-to-end test. Scenarios:
 [`features/provider-manager.feature`](features/provider-manager.feature).
 
 ## Non-Goals
 
-Performing HTTP requests in the first cut; storing literal secrets;
-per-provider rate limiting or retries; provider health checks.
+Performing requests itself — the transport belongs to model-manager; storing
+literal secrets; per-provider rate limiting or retries; provider health
+checks.
 
 ## Decisions
 
-- **PM1 — Transport deferred, not patched.** Network arrives as the upstream
-  `memento.http_request` proposal; provider-manager never reaches around the
-  ABI.
+- **PM1 — Transport landed upstream.** The `memento.http_request` extension is
+  implemented in memento's loader; provider-manager publishes the registry
+  model-manager uses and never reaches around the ABI.
 - **PM2 — Credentials are references.** Payloads carry `env:VAR`-style
-  references so specs and repositories stay secret-free.
+  references; the host substitutes them at request time, so specs,
+  repositories, and guest memory stay secret-free.
 - **PM3 — Stable order.** Listing preserves insertion order, keeping the
   registry deterministic for tests and transcripts.
+- **PM4 — Providers declare the models they serve.** `models` is the
+  model-to-endpoint mapping; a concrete model that no provider lists is a
+  dangling reference, and a call for it fails loudly.

@@ -55,3 +55,22 @@ Feature: model-manager views and resolution
       And a view "b" as alias of "a"
       When the name "a" is resolved
       Then resolution fails with a cycle error
+
+  Rule: Response answers through the caller
+
+    Scenario: Responding answers with the resolved model
+      Given a registry with view "fast" as alias of "gpt"
+      When the model "fast" is asked to respond
+      Then the answer comes from "gpt"
+
+    Scenario: A fallback answers with its first working target
+      Given a registry with view "reliable" as fallback ["a", "b"]
+      And the model caller fails for "a"
+      When the model "reliable" is asked to respond
+      Then the answer comes from "b"
+
+    Scenario: Responding without a caller is refused
+      Given a registry with view "fast" as alias of "gpt"
+      And no model caller is configured
+      When the model "fast" is asked to respond
+      Then the response fails

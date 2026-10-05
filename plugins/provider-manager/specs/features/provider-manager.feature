@@ -46,3 +46,15 @@ Feature: provider-manager registry
       Given a config payload that is not valid JSON
       When the config is parsed
       Then parsing fails
+
+  Rule: Providers declare the models they serve
+
+    Scenario: A listed model maps to its provider
+      Given an empty provider registry
+      When a provider "local" at "https://local.example/v1" serving "llama-3.2" is registered
+      Then "llama-3.2" is served by "local"
+
+    Scenario: An unlisted model has no provider
+      Given an empty provider registry
+      When a provider "local" at "https://local.example/v1" serving "llama-3.2" is registered
+      Then "gpt-4o-mini" has no provider

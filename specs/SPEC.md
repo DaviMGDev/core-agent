@@ -135,7 +135,8 @@ plugin; the host side embeds it.
 `memento_alloc`/`memento_handle` to serve invocations; they import
 `memento.declare_inject`, `memento.declare_provide`, `memento.bind`,
 `memento.get_len`, `memento.get`, `memento.invoke`, `memento.get_payload_len`,
-`memento.get_payload`, `memento.register_effect`, and `memento.log`. Strings
+`memento.get_payload`, `memento.http_request`, `memento.http_response_len`,
+`memento.http_response`, `memento.register_effect`, and `memento.log`. Strings
 cross as (pointer, length) pairs into guest memory; the ABI's isolated
 contract lives in memento's `plugins/wasm/specs/`. WASI stdio is wired for the
 REPL guest.
@@ -190,10 +191,13 @@ closes it.
 **Turn pipeline.** A chat turn flows through the composed plugins over the
 loader's `invoke` ABI: the REPL appends the user turn to chat-history, reads
 recent turns, projects them into the context window, asks model-manager to
-respond (which resolves the model view to its first concrete model), and
-records the assistant reply. With no transport yet (D6), the response text is
-deterministic — `[<model>] <text> (context:<turns>)` — so the whole pipeline is
-visible in the transcript; only the provider call is missing.
+respond, and records the assistant reply. model-manager resolves the view to
+its concrete models, maps the chosen model to a provider through the injected
+provider registry, and performs the exchange over the loader's host-mediated
+HTTP transport; the provider's answer is the response line. A fallback view
+tries its targets in order; a discussion group answers with its first
+participant, since merge orchestration is still deferred. Credentials cross as
+`env:VAR` references the host substitutes, so no secret enters guest memory.
 
 **Management semantics.** provider-manager stores `{name, endpoint,
 credential}` with validation and stable listing; model-manager resolves `alias`
@@ -207,7 +211,10 @@ model-manager `resolve`/`respond`.
 
 **Configuration.** Each entry carries a payload: JSON config for the
 management plugins, a nickname string for repl-chat. The assembler provides
-defaults in `cmd/` and may override them with entries.
+defaults in `cmd/` and may override them with entries. The provider document
+lists, per provider, the concrete models it serves (the model-to-endpoint
+mapping); an entry wires the loader's HTTP transport and its credential
+resolver (`env:VAR` → host environment).
 
 ## Conformance
 
@@ -239,10 +246,10 @@ session test, and per-package Go tests cover each library beside its code.
 ## Non-Goals
 
 Extras beyond the five starter plugins; local patches to memento (changes go
-upstream); network or binding-read guest capabilities before the upstream ABI
-extension; loading or unloading plugins from inside the REPL; persistence of
-history or credentials; cross-process or out-of-tree composition; any layout
-beyond `plugins/`, `cmd/`, and the `conformance/` runner in the first cut.
+upstream); loading or unloading plugins from inside the REPL; discussion merge
+orchestration; persistence of history or credentials; cross-process or
+out-of-tree composition; any layout beyond `plugins/`, `cmd/`, and the
+`conformance/` runner in the first cut.
 
 ## Decisions
 
@@ -263,10 +270,12 @@ beyond `plugins/`, `cmd/`, and the `conformance/` runner in the first cut.
   `wasm.KeyRegistry`, so injection satisfaction and provider identity work
   across plugins; each guest binds its provided values through the ABI, so the
   registration is the guest's own tracked effect.
-- **D6 — Transport deferred, not patched.** The current host ABI exposes no
-  network calls; provider-manager specifies the required upstream extension
-  (`memento.http_request`, proposed to memento) and implements management
-  semantics only. No silent workaround.
+- **D6 — Transport landed upstream, not patched.** The host ABI now exposes
+  host-mediated HTTP (`memento.http_request` with `http_response_len`/
+  `http_response`), host-owned egress policy, and host-substituted credential
+  references; memento's loader specifies and implements it. core-agent adopts
+  it: model-manager performs the provider exchange, so a chat turn returns the
+  provider's answer instead of a deterministic stub.
 - **D7 — Godog conformance.** Every feature file runs on Godog from
   `conformance/` (the layout exception this plan proposed); plugin features
   bind to the libraries, system features to the host-level composition, and
@@ -275,8 +284,7 @@ beyond `plugins/`, `cmd/`, and the `conformance/` runner in the first cut.
 - **D8 — Cross-guest data flow runs over invoke.** The loader's `invoke` ABI
   is the call surface: the REPL pipeline reaches chat-history,
   context-manager, and model-manager through their operation handlers, so the
-  first cut composes live data, not only lifecycle. Transport remains the only
-  deferred provider capability (D6).
+  first cut composes live data, not only lifecycle.
 - **D9 — Committed artifacts.** Each plugin's `.wasm` is built from
   `plugins/<name>/guest` and committed beside the plugin; the host side embeds
   it, so tests and the entry need no rebuild step.
@@ -287,3 +295,7 @@ beyond `plugins/`, `cmd/`, and the `conformance/` runner in the first cut.
 declared provides during activation through `memento.bind`, and the temporary
 host-side binding adapter was removed. Nothing about registration is
 host-side anymore.
+- **D12 — Providers declare the models they serve.** A provider's `models`
+  list is the model-to-endpoint mapping, so a resolved model reaches a
+  concrete endpoint without inventing naming heuristics. A concrete model no
+  provider lists is a dangling reference and the call fails loudly.

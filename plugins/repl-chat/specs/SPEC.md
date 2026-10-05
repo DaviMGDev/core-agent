@@ -18,8 +18,8 @@ It is a wasm guest (WASI stdio) that provides the key `repl` and injects
 only once its dependencies are available.
 
 The first cut fixes the session protocol and the basic commands; each chat
-turn runs the composed pipeline over `memento.invoke`, with the model's
-response deterministic until transport (system D6) lands.
+turn runs the composed pipeline over `memento.invoke`, and the model's
+response arrives from the provider through model-manager.
 
 ## Protocol
 
@@ -29,8 +29,8 @@ response deterministic until transport (system D6) lands.
 - `:quit`, `:q`, and `:exit` end the session.
 - A blank line produces no response and the next prompt.
 - Any other line is one chat turn: the guest runs the composed pipeline and
-  prints exactly one response line (the model-manager response, since
-  transport is deferred).
+  prints exactly one response line (the model-manager response, which performs
+  the provider call).
 - End of input ends the session cleanly.
 
 ## Semantics
@@ -72,14 +72,15 @@ test scripts a session through the composed system. Scenarios:
 
 ## Non-Goals
 
-Loading or unloading plugins from the REPL; provider transport; persistence;
-multiple sessions; a privileged LLM channel.
+Loading or unloading plugins from the REPL; performing transport itself (the
+exchange belongs to model-manager); persistence; multiple sessions; a
+privileged LLM channel.
 
 ## Decisions
 
-- **RC1 — Pipeline first.** The first cut answers through the composed system
-  (history → context → model over `invoke`); with transport deferred the
-  model's response is deterministic, but the path is the real one.
+- **RC1 — Pipeline first.** A chat turn answers through the composed system
+  (history → context → model over `invoke`), and the model step performs the
+  real provider call.
 - **RC2 — No plugin control in the REPL.** The REPL exposes session commands
   only; the loader composes (charter open question 3; system D4).
 - **RC3 — Pure session logic.** The protocol lives in the host-testable
