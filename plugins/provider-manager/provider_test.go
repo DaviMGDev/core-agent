@@ -38,7 +38,6 @@ func TestValidateRefusals(t *testing.T) {
 		p    Provider
 	}{
 		{"empty name", Provider{Name: " ", Endpoint: "https://a.example", Credential: "env:X"}},
-		{"missing credential", Provider{Name: "a", Endpoint: "https://a.example"}},
 		{"relative endpoint", Provider{Name: "a", Endpoint: "api.example.com", Credential: "env:X"}},
 		{"unsupported scheme", Provider{Name: "a", Endpoint: "ftp://api.example.com", Credential: "env:X"}},
 		{"empty endpoint", Provider{Name: "a", Endpoint: "", Credential: "env:X"}},
@@ -184,6 +183,17 @@ func TestProviderForUsesInsertionOrder(t *testing.T) {
 	p, ok := r.ProviderFor("shared")
 	if !ok || p.Name != "first" {
 		t.Fatalf("ProviderFor(shared) = %+v, %v; want the first provider", p, ok)
+	}
+}
+
+func TestKeylessProviderRegisters(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(Provider{Name: "local", Endpoint: "http://127.0.0.1:11434/v1", Models: []string{"llama-3.2"}}); err != nil {
+		t.Fatalf("Register(keyless): %v", err)
+	}
+	p, ok := r.Get("local")
+	if !ok || p.Credential != "" {
+		t.Fatalf("Get(local) = %+v, %v; want a provider with no credential", p, ok)
 	}
 }
 

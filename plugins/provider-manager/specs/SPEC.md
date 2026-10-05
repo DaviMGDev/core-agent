@@ -29,8 +29,9 @@ model to an endpoint through the registry this plugin publishes.
   - `endpoint` is an absolute `http` or `https` URL with a host; required
     unless `mock` is set;
   - `credential` is a non-secret reference (`env:VAR` style), never a literal
-    secret in the payload, substituted host-side at request time; required
-    unless `mock` is set;
+    secret in the payload, substituted host-side at request time; it may be
+    empty for an endpoint that needs no authentication (a local runtime), and
+    a `mock` provider ignores it;
   - `models` lists the concrete model names the provider serves, in no
     particular order; it may be empty;
   - `mock`, when set, makes the provider answer in-process: it needs neither an
@@ -91,9 +92,10 @@ checks.
 - **PM1 — Transport landed upstream.** The `memento.http_request` extension is
   implemented in memento's loader; provider-manager publishes the registry
   model-manager uses and never reaches around the ABI.
-- **PM2 — Credentials are references.** Payloads carry `env:VAR`-style
-  references; the host substitutes them at request time, so specs,
-  repositories, and guest memory stay secret-free.
+- **PM2 — Credentials are references.** When present, payloads carry
+  `env:VAR`-style references; the host substitutes them at request time, so
+  specs, repositories, and guest memory stay secret-free. A keyless provider
+  (a local runtime) simply carries none.
 - **PM3 — Stable order.** Listing preserves insertion order, keeping the
   registry deterministic for tests and transcripts.
 - **PM4 — Providers declare the models they serve.** `models` is the

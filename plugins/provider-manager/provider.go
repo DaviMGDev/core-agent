@@ -18,11 +18,12 @@ import (
 var ErrDuplicate = errors.New("provider-manager: duplicate provider name")
 
 // Provider identifies one AI provider endpoint. Credential is a non-secret
-// reference such as "env:OPENAI_API_KEY", never a literal secret. Models lists
-// the concrete model names the provider serves, which is how model-manager
-// maps a resolved model to an endpoint. Mock providers answer in-process,
-// through the model-manager mock caller, and need neither an endpoint nor a
-// credential.
+// reference such as "env:OPENAI_API_KEY", never a literal secret; it may be
+// empty for an endpoint that needs no authentication, such as a local runtime.
+// Models lists the concrete model names the provider serves, which is how
+// model-manager maps a resolved model to an endpoint. Mock providers answer
+// in-process, through the model-manager mock caller, and need neither an
+// endpoint nor a credential.
 type Provider struct {
 	Name       string   `json:"name"`
 	Endpoint   string   `json:"endpoint,omitempty"`
@@ -44,9 +45,6 @@ func Validate(p Provider) error {
 	}
 	if p.Mock {
 		return nil
-	}
-	if strings.TrimSpace(p.Credential) == "" {
-		return fmt.Errorf("provider-manager: provider %q has no credential reference", p.Name)
 	}
 	u, err := url.Parse(p.Endpoint)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
