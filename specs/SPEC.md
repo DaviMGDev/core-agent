@@ -196,8 +196,11 @@ its concrete models, maps the chosen model to a provider through the injected
 provider registry, and performs the exchange over the loader's host-mediated
 HTTP transport; the provider's answer is the response line. A fallback view
 tries its targets in order; a discussion group answers with its first
-participant, since merge orchestration is still deferred. Credentials cross as
-`env:VAR` references the host substitutes, so no secret enters guest memory.
+participant, since merge orchestration is still deferred. A provider marked
+`mock` answers in-process — the mock caller echoes the model, the last user
+message, and the context size — so the system runs with no provider and no
+socket. Credentials cross as `env:VAR` references the host substitutes, so no
+secret enters guest memory.
 
 **Management semantics.** provider-manager stores `{name, endpoint,
 credential}` with validation and stable listing; model-manager resolves `alias`
@@ -214,7 +217,9 @@ management plugins, a nickname string for repl-chat. The assembler provides
 defaults in `cmd/` and may override them with entries. The provider document
 lists, per provider, the concrete models it serves (the model-to-endpoint
 mapping); an entry wires the loader's HTTP transport and its credential
-resolver (`env:VAR` → host environment).
+resolver (`env:VAR` → host environment). A provider marked `mock` needs no
+endpoint: `cmd/core-agent -mock` swaps the provider document for a single
+in-process mock serving the default views' models.
 
 ## Conformance
 
@@ -299,3 +304,8 @@ host-side anymore.
   list is the model-to-endpoint mapping, so a resolved model reaches a
   concrete endpoint without inventing naming heuristics. A concrete model no
   provider lists is a dangling reference and the call fails loudly.
+- **D13 — The LLM is mocked in-process, by config.** A provider marked `mock`
+  answers through model-manager's `MockCaller` instead of an exchange; no
+  server and no network. Host-level conformance composes that same mock
+  caller, so the deterministic transcript and the mockable system are one
+  mechanism.
