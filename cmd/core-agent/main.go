@@ -35,7 +35,7 @@ const (
 	DefaultNick = "agent"
 
 	providerConfig = `{"providers":[` +
-		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","credential":"env:CORE_AGENT_LOCAL_KEY","models":["llama-3.2"]},` +
+		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","models":["llama-3.2"]},` +
 		`{"name":"openai","endpoint":"https://api.openai.com/v1","credential":"env:OPENAI_API_KEY","models":["gpt-4o-mini"]}]}`
 
 	// mockProviderConfig backs -mock: one in-process mock provider serving the

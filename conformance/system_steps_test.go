@@ -470,7 +470,7 @@ func stepCycleInsertion(ctx context.Context) error {
 
 const (
 	sysProviderConfig = `{"providers":[` +
-		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","credential":"env:CORE_AGENT_LOCAL_KEY","models":["llama-3.2"]},` +
+		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","models":["llama-3.2"]},` +
 		`{"name":"openai","endpoint":"https://api.openai.com/v1","credential":"env:OPENAI_API_KEY","models":["gpt-4o-mini"]}]}`
 	sysModelConfig = `{"models":[` +
 		`{"name":"fast","alias":"llama-3.2"},` +
