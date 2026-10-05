@@ -94,7 +94,7 @@ type world struct {
 	// model-manager
 	models   *modelmanager.Registry
 	res      modelmanager.Resolution
-	caller   *stubCaller
+	caller   modelmanager.Caller
 	noCaller bool
 	answer   modelmanager.Result
 

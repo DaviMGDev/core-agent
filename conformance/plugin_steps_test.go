@@ -57,7 +57,9 @@ func registerPluginSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the model caller fails for "([^"]*)"$`, stepCallerFailsFor)
 	sc.Step(`^no model caller is configured$`, stepNoCaller)
 	sc.Step(`^the answer comes from "([^"]*)"$`, stepAnswerFrom)
+	sc.Step(`^the answer text is "([^"]*)"$`, stepAnswerText)
 	sc.Step(`^the response fails$`, stepResponseFails)
+	sc.Step(`^a mock provider "([^"]*)" serving "([^"]*)" is registered$`, stepRegisterMockProvider)
 
 	// chat-history
 	sc.Step(`^a conversation "([^"]*)"$`, stepConversation)
@@ -746,12 +748,9 @@ func (c *stubCaller) Complete(model string, _ []modelmanager.ContextMessage) (st
 
 func stepAskToRespond(ctx context.Context, model string) error {
 	w := worldFrom(ctx)
-	var caller modelmanager.Caller
-	if !w.noCaller {
-		if w.caller == nil {
-			w.caller = &stubCaller{}
-		}
-		caller = w.caller
+	caller := w.caller
+	if !w.noCaller && caller == nil {
+		caller = modelmanager.MockCaller{}
 	}
 	w.answer, w.err = modelmanager.Apply(w.models, modelmanager.Op{Kind: "respond", Model: model}, caller)
 	return nil
@@ -759,13 +758,15 @@ func stepAskToRespond(ctx context.Context, model string) error {
 
 func stepCallerFailsFor(ctx context.Context, model string) error {
 	w := worldFrom(ctx)
-	if w.caller == nil {
-		w.caller = &stubCaller{}
+	stub, _ := w.caller.(*stubCaller)
+	if stub == nil {
+		stub = &stubCaller{}
+		w.caller = stub
 	}
-	if w.caller.failOn == nil {
-		w.caller.failOn = map[string]bool{}
+	if stub.failOn == nil {
+		stub.failOn = map[string]bool{}
 	}
-	w.caller.failOn[model] = true
+	stub.failOn[model] = true
 	return nil
 }
 
@@ -782,6 +783,26 @@ func stepAnswerFrom(ctx context.Context, model string) error {
 	if w.answer.Model != model {
 		return fmt.Errorf("answer model = %q, want %q", w.answer.Model, model)
 	}
+	return nil
+}
+
+func stepAnswerText(ctx context.Context, want string) error {
+	w := worldFrom(ctx)
+	if w.err != nil {
+		return fmt.Errorf("respond failed: %w", w.err)
+	}
+	if w.answer.Text != want {
+		return fmt.Errorf("answer text = %q, want %q", w.answer.Text, want)
+	}
+	return nil
+}
+
+func stepRegisterMockProvider(ctx context.Context, name, model string) error {
+	w := worldFrom(ctx)
+	if w.providers == nil {
+		w.providers = providermanager.NewRegistry()
+	}
+	w.err = w.providers.Register(providermanager.Provider{Name: name, Mock: true, Models: []string{model}})
 	return nil
 }
 

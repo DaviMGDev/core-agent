@@ -303,7 +303,7 @@ func stepRecordsTurns(ctx context.Context) error {
 
 func stepResponseNamesPipeline(ctx context.Context) error {
 	w := worldFrom(ctx)
-	if !strings.Contains(w.firstResponse, "[llama-3.2]") || !strings.Contains(w.firstResponse, "(context:1)") {
+	if !strings.Contains(w.firstResponse, "mock(llama-3.2)") || !strings.Contains(w.firstResponse, "(context:1)") {
 		return fmt.Errorf("response %q does not name the model and context size", w.firstResponse)
 	}
 	return nil
@@ -479,22 +479,6 @@ const (
 	sysContextConfig = `{"budget":4096}`
 )
 
-// echoCaller stands in for the provider transport in host-level conformance.
-// It is deterministic and names the resolved model and the context size, so
-// the transcript stays assertable (system spec: determinism) while the real
-// HTTP path is exercised by the entry's end-to-end test.
-type echoCaller struct{}
-
-func (echoCaller) Complete(model string, messages []modelmanager.ContextMessage) (string, error) {
-	last := ""
-	for _, m := range messages {
-		if m.Role == chathistory.RoleUser {
-			last = m.Text
-		}
-	}
-	return fmt.Sprintf("[%s] %s (context:%d)", model, last, len(messages)), nil
-}
-
 // hostComponent is a Go component built by the conformance fixture.
 type hostComponent struct {
 	decls    rt.Declarations
@@ -657,7 +641,7 @@ func runHostSystem(in io.Reader, out io.Writer, nick string) error {
 				}
 				res, err := modelmanager.Apply(models, modelmanager.Op{
 					Kind: "respond", Model: "fast", Text: line, Context: contextMessages,
-				}, echoCaller{})
+				}, modelmanager.MockCaller{})
 				if err != nil {
 					return "", err
 				}
