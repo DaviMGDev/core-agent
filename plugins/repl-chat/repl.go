@@ -1,7 +1,8 @@
 // Package replchat implements the repl-chat session protocol.
 //
-// The library is pure: Handle turns one input line into one Reply. The guest
-// owns stdin, logging, and the memento ABI.
+// The library is pure: Handle turns one input line into one Reply, delegating
+// chat turns to a responder; the guest owns stdin, logging, the memento ABI,
+// and the pipeline responder.
 package replchat
 
 import (
@@ -52,42 +53,35 @@ func (s *Session) JoinMessage() string {
 	return fmt.Sprintf("repl: %s joined (type :help, :quit to leave)", s.nick)
 }
 
-// Handle interprets one input line. Commands and blank lines do not advance
-// the turn counter; any other line is one chat turn answered by the
-// first-cut local stub.
-func (s *Session) Handle(line string) Reply {
+// Handle interprets one input line. Commands and blank lines never call
+// respond and never advance the counter; any other line is one chat turn whose
+// text is respond's result.
+func (s *Session) Handle(line string, respond func(string) (string, error)) (Reply, error) {
 	line = strings.TrimSpace(line)
 	switch line {
 	case "":
-		return Reply{}
+		return Reply{}, nil
 	case ":quit", ":q", ":exit":
-		return Reply{Quit: true}
+		return Reply{Quit: true}, nil
 	case ":help":
-		return Reply{Text: "commands: :help, :quit"}
+		return Reply{Text: "commands: :help, :quit"}, nil
 	default:
 		s.turn++
-		return Reply{Text: StubResponse(s.turn, oneLine(line))}
+		text, err := respond(line)
+		if err != nil {
+			return Reply{}, err
+		}
+		return Reply{Text: oneLine(text)}, nil
 	}
-}
-
-// oneLine flattens embedded line breaks so a reply is always one line.
-func oneLine(s string) string {
-	return strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(s)
-}
-
-// StubResponse renders the first-cut deterministic response for a turn: it
-// names the turn and echoes the line. Transport-backed answers replace the
-// stub, not this protocol.
-func StubResponse(turn int, line string) string {
-	return fmt.Sprintf("turn %d: %s", turn, line)
 }
 
 // Run hosts the session loop on in: it emits the join line, a prompt before
 // every read, and one response per chat turn; blank lines emit nothing more
-// than the next prompt. It returns when a quit command arrives or the input
-// ends, and reports a read error. The guest supplies stdin and wires emit to
-// the kernel log; the protocol stays here, testable on the host.
-func (s *Session) Run(in io.Reader, emit func(string)) error {
+// than the next prompt. A responder error is reported in the transcript and
+// the session continues. It returns when a quit command arrives or the input
+// ends, and reports a read error. The guest supplies stdin, wires emit to the
+// kernel log, and supplies the pipeline responder.
+func (s *Session) Run(in io.Reader, emit func(string), respond func(string) (string, error)) error {
 	emit(s.JoinMessage() + "\n")
 	sc := bufio.NewScanner(in)
 	for {
@@ -95,7 +89,11 @@ func (s *Session) Run(in io.Reader, emit func(string)) error {
 		if !sc.Scan() {
 			break
 		}
-		reply := s.Handle(sc.Text())
+		reply, err := s.Handle(sc.Text(), respond)
+		if err != nil {
+			emit("repl: " + err.Error() + "\n")
+			continue
+		}
 		if reply.Quit {
 			return nil
 		}
@@ -104,4 +102,9 @@ func (s *Session) Run(in io.Reader, emit func(string)) error {
 		}
 	}
 	return sc.Err()
+}
+
+// oneLine flattens embedded line breaks so a reply is always one line.
+func oneLine(s string) string {
+	return strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(s)
 }

@@ -2,13 +2,16 @@
 
 // Command guest is the repl-chat wasm guest for the memento loader.
 //
-// It provides the key "repl", injects "chat-history", "model-registry", and
-// "llm-context", registers one effect, and hosts the REPL session on WASI
-// stdin. Output goes through the memento log import; the effect inverse
-// announces the session end on unload.
+// It provides the key "repl" (bound to the session nickname), injects
+// "chat-history", "model-registry", and "llm-context", and hosts the REPL
+// session on WASI stdin. Each chat turn runs the composed pipeline over the
+// loader's invoke ABI: append the user turn, read recent history, project the
+// context window, ask the model, and record the assistant reply.
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"unsafe"
 
@@ -18,6 +21,14 @@ import (
 const (
 	effectID   = 1
 	provideKey = "repl"
+
+	historyKey   = "chat-history"
+	contextKey   = "llm-context"
+	modelKey     = "model-registry"
+	conversation = "main"
+	defaultModel = "fast"
+	recentTurns  = 10
+	responseCap  = 8192
 )
 
 var injectKeys = []string{"chat-history", "model-registry", "llm-context"}
@@ -30,6 +41,9 @@ func declareProvide(ptr unsafe.Pointer, n uint32) int32
 
 //go:wasmimport memento bind
 func bindHost(keyPtr unsafe.Pointer, keyLen uint32, valPtr unsafe.Pointer, valLen uint32) int32
+
+//go:wasmimport memento invoke
+func invokeHost(keyPtr unsafe.Pointer, keyLen uint32, reqPtr unsafe.Pointer, reqLen uint32, respPtr unsafe.Pointer, respMax uint32) int32
 
 //go:wasmimport memento get_payload_len
 func getPayloadLen() int32
@@ -76,6 +90,91 @@ func bindProvided(value []byte) bool {
 	return bindHost(unsafe.Pointer(&kb[0]), uint32(len(kb)), unsafe.Pointer(&value[0]), uint32(len(value))) == 0
 }
 
+// turn is one pipeline request; Op selects the operation.
+type turn struct {
+	Op           string    `json:"op"`
+	Conversation string    `json:"conversation,omitempty"`
+	Role         string    `json:"role,omitempty"`
+	Text         string    `json:"text,omitempty"`
+	N            int       `json:"n,omitempty"`
+	Model        string    `json:"model,omitempty"`
+	Messages     []message `json:"messages,omitempty"`
+	Context      []message `json:"context,omitempty"`
+}
+
+// message is one conversation turn crossing the ABI.
+type message struct {
+	Role string `json:"role,omitempty"`
+	Text string `json:"text"`
+}
+
+// historyResult reads the messages field of history and context responses.
+type historyResult struct {
+	Messages []message `json:"messages"`
+}
+
+// answerResult reads the text field of a model response.
+type answerResult struct {
+	Text string `json:"text"`
+}
+
+// invokeJSON sends one request to a key's provider and returns the raw
+// response bytes.
+func invokeJSON(key string, req any) ([]byte, error) {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	kb := []byte(key)
+	resp := make([]byte, responseCap)
+	n := invokeHost(
+		unsafe.Pointer(&kb[0]), uint32(len(kb)),
+		unsafe.Pointer(&payload[0]), uint32(len(payload)),
+		unsafe.Pointer(&resp[0]), uint32(len(resp)),
+	)
+	if n <= 0 {
+		return nil, fmt.Errorf("invoke %s: no response", key)
+	}
+	return resp[:n], nil
+}
+
+// respond runs one chat turn through the composed system: append the user
+// turn, read recent history, project it into the context window, ask the
+// model, and record the assistant reply.
+func respond(line string) (string, error) {
+	if _, err := invokeJSON(historyKey, turn{Op: "append", Conversation: conversation, Role: "user", Text: line}); err != nil {
+		return "", err
+	}
+	raw, err := invokeJSON(historyKey, turn{Op: "recent", Conversation: conversation, N: recentTurns})
+	if err != nil {
+		return "", err
+	}
+	var history historyResult
+	if err := json.Unmarshal(raw, &history); err != nil {
+		return "", fmt.Errorf("reading history: %w", err)
+	}
+	raw, err = invokeJSON(contextKey, turn{Op: "project", Messages: history.Messages})
+	if err != nil {
+		return "", err
+	}
+	var window historyResult
+	if err := json.Unmarshal(raw, &window); err != nil {
+		return "", fmt.Errorf("reading context: %w", err)
+	}
+	raw, err = invokeJSON(modelKey, turn{Op: "respond", Model: defaultModel, Text: line, Context: window.Messages})
+	if err != nil {
+		return "", err
+	}
+	var answer answerResult
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return "", fmt.Errorf("reading answer: %w", err)
+	}
+	if _, err := invokeJSON(historyKey, turn{Op: "append", Conversation: conversation, Role: "assistant", Text: answer.Text}); err != nil {
+		return "", err
+	}
+	return answer.Text, nil
+}
+
 //go:wasmexport memento_declare
 func mementoDeclare() uint32 {
 	for _, k := range injectKeys {
@@ -101,7 +200,7 @@ func mementoActivate() uint32 {
 	if !bindProvided([]byte(session.Nick())) {
 		return 2
 	}
-	if err := session.Run(os.Stdin, emit); err != nil {
+	if err := session.Run(os.Stdin, emit, respond); err != nil {
 		emit("repl: input error: " + err.Error() + "\n")
 		return 3
 	}

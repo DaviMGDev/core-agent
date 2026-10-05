@@ -180,10 +180,17 @@ func ParseConfig(payload []byte) ([]View, error) {
 
 // Op is one operation requested over the view registry.
 type Op struct {
-	Kind  string `json:"op"`
-	Name  string `json:"name,omitempty"`
-	Model string `json:"model,omitempty"`
-	Text  string `json:"text,omitempty"`
+	Kind    string           `json:"op"`
+	Name    string           `json:"name,omitempty"`
+	Model   string           `json:"model,omitempty"`
+	Text    string           `json:"text,omitempty"`
+	Context []ContextMessage `json:"context,omitempty"`
+}
+
+// ContextMessage is one turn supplied as context to a response.
+type ContextMessage struct {
+	Role string `json:"role,omitempty"`
+	Text string `json:"text"`
 }
 
 // Result is the response of an operation.
@@ -214,7 +221,10 @@ func Apply(r *Registry, op Op) (Result, error) {
 			return Result{}, fmt.Errorf("model-manager: %q resolves to no model", op.Model)
 		}
 		model := res.Models[0]
-		return Result{Model: model, Text: "[" + model + "] " + op.Text}, nil
+		return Result{
+			Model: model,
+			Text:  fmt.Sprintf("[%s] %s (context:%d)", model, op.Text, len(op.Context)),
+		}, nil
 	default:
 		return Result{}, fmt.Errorf("model-manager: unknown operation %q", op.Kind)
 	}

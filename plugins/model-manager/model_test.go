@@ -180,8 +180,16 @@ func TestApplyOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply(respond): %v", err)
 	}
-	if res.Model != "llama" || res.Text != "[llama] hello" {
-		t.Fatalf("respond = %+v, want [llama] hello", res)
+	if res.Model != "llama" || res.Text != "[llama] hello (context:0)" {
+		t.Fatalf("respond = %+v, want [llama] hello (context:0)", res)
+	}
+
+	withContext, err := Apply(r, Op{Kind: "respond", Model: "fast", Text: "hi", Context: []ContextMessage{{Role: "user", Text: "x"}}})
+	if err != nil {
+		t.Fatalf("Apply(respond with context): %v", err)
+	}
+	if withContext.Text != "[llama] hi (context:1)" {
+		t.Fatalf("respond with context = %+v, want context:1", withContext)
 	}
 
 	if _, err := Apply(r, Op{Kind: "sing"}); err == nil {

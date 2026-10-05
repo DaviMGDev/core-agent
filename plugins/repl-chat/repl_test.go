@@ -1,9 +1,14 @@
 package replchat
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+func echoResponder(line string) (string, error) {
+	return "echo: " + line, nil
+}
 
 func TestJoinMessage(t *testing.T) {
 	cases := []struct {
@@ -24,10 +29,14 @@ func TestJoinMessage(t *testing.T) {
 
 func TestHandleCommandsDoNotAdvanceTurns(t *testing.T) {
 	s := New("agent")
+	noRespond := func(string) (string, error) {
+		t.Fatal("respond called for a command or blank line")
+		return "", nil
+	}
 
-	help := s.Handle(":help")
-	if help.Quit {
-		t.Fatal(":help ended the session")
+	help, err := s.Handle(":help", noRespond)
+	if err != nil || help.Quit {
+		t.Fatalf(":help = %+v, %v; want a non-quit reply", help, err)
 	}
 	for _, want := range []string{":help", ":quit"} {
 		if !strings.Contains(help.Text, want) {
@@ -35,8 +44,8 @@ func TestHandleCommandsDoNotAdvanceTurns(t *testing.T) {
 		}
 	}
 
-	if r := s.Handle("   "); r.Text != "" || r.Quit {
-		t.Errorf("blank line reply = %+v, want empty", r)
+	if r, err := s.Handle("   ", noRespond); err != nil || r.Text != "" || r.Quit {
+		t.Errorf("blank line reply = %+v, %v; want empty", r, err)
 	}
 
 	if s.Turn() != 0 {
@@ -47,48 +56,57 @@ func TestHandleCommandsDoNotAdvanceTurns(t *testing.T) {
 func TestHandleQuitAliases(t *testing.T) {
 	for _, alias := range []string{":quit", ":q", ":exit"} {
 		s := New("agent")
-		if r := s.Handle(alias); !r.Quit {
-			t.Errorf("%s: Quit = false, want true", alias)
+		if r, err := s.Handle(alias, echoResponder); err != nil || !r.Quit {
+			t.Errorf("%s: reply = %+v, %v; want Quit", alias, r, err)
 		}
 	}
 }
 
-func TestHandleChatTurns(t *testing.T) {
+func TestHandleChatTurnsDelegate(t *testing.T) {
 	s := New("agent")
 
-	first := s.Handle("hello")
-	if first.Quit {
-		t.Fatal("chat turn ended the session")
+	first, err := s.Handle("hello", echoResponder)
+	if err != nil || first.Quit {
+		t.Fatalf("first turn = %+v, %v", first, err)
 	}
-	if first.Text != "turn 1: hello" {
-		t.Errorf("first reply = %q, want %q", first.Text, "turn 1: hello")
+	if first.Text != "echo: hello" {
+		t.Errorf("first reply = %q, want %q", first.Text, "echo: hello")
 	}
 	if s.Turn() != 1 {
 		t.Fatalf("Turn() = %d after one chat turn, want 1", s.Turn())
 	}
 
-	second := s.Handle("  again  ")
-	if second.Text != "turn 2: again" {
-		t.Errorf("second reply = %q, want %q", second.Text, "turn 2: again")
+	second, err := s.Handle("  again  ", echoResponder)
+	if err != nil || second.Text != "echo: again" {
+		t.Errorf("second reply = %+v, %v; want echo: again", second, err)
 	}
 
 	// A command between turns must not consume a turn.
-	s.Handle(":help")
+	if _, err := s.Handle(":help", echoResponder); err != nil {
+		t.Fatalf(":help: %v", err)
+	}
 	if s.Turn() != 2 {
 		t.Fatalf("Turn() = %d after a command between turns, want 2", s.Turn())
 	}
 }
 
-func TestHandleSingleLineResponses(t *testing.T) {
+func TestHandleResponderError(t *testing.T) {
 	s := New("agent")
-	for _, line := range []string{"hello", "two words", "with\nnewline"} {
-		reply := s.Handle(line)
-		if reply.Text == "" {
-			t.Errorf("line %q produced no response", line)
-		}
-		if c := strings.Count(strings.TrimRight(reply.Text, "\n"), "\n"); c != 0 {
-			t.Errorf("line %q produced %d embedded newlines: %q", line, c, reply.Text)
-		}
+	want := errors.New("pipeline down")
+	if _, err := s.Handle("hello", func(string) (string, error) { return "", want }); !errors.Is(err, want) {
+		t.Fatalf("Handle error = %v, want %v", err, want)
+	}
+}
+
+func TestHandleSingleLineReplies(t *testing.T) {
+	s := New("agent")
+	respond := func(string) (string, error) { return "two\nlines", nil }
+	r, err := s.Handle("hello", respond)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if strings.Contains(r.Text, "\n") {
+		t.Fatalf("reply has embedded newline: %q", r.Text)
 	}
 }
 
@@ -97,7 +115,7 @@ func TestRunScriptedSession(t *testing.T) {
 	var events []string
 	err := s.Run(strings.NewReader("hello there\n\n:help\n:quit\nignored\n"), func(e string) {
 		events = append(events, e)
-	})
+	}, echoResponder)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -105,7 +123,7 @@ func TestRunScriptedSession(t *testing.T) {
 	for _, want := range []string{
 		"repl: tester joined (type :help, :quit to leave)\n",
 		"you> ",
-		"turn 1: hello there\n",
+		"echo: hello there\n",
 		"commands: :help, :quit\n",
 	} {
 		if !strings.Contains(joined, want) {
@@ -120,14 +138,33 @@ func TestRunScriptedSession(t *testing.T) {
 func TestRunEndsOnEOF(t *testing.T) {
 	s := New("")
 	var events []string
-	if err := s.Run(strings.NewReader("hi\n"), func(e string) { events = append(events, e) }); err != nil {
+	if err := s.Run(strings.NewReader("hi\n"), func(e string) { events = append(events, e) }, echoResponder); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	joined := strings.Join(events, "")
 	if !strings.Contains(joined, "repl: agent joined") {
 		t.Errorf("blank nickname did not default to agent:\n%s", joined)
 	}
-	if !strings.Contains(joined, "turn 1: hi") || !strings.Contains(joined, "you> ") {
+	if !strings.Contains(joined, "echo: hi") || !strings.Contains(joined, "you> ") {
 		t.Errorf("EOF session transcript incomplete:\n%s", joined)
+	}
+}
+
+func TestRunContinuesAfterResponderError(t *testing.T) {
+	s := New("agent")
+	var events []string
+	calls := 0
+	respond := func(line string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", errors.New("pipeline down")
+		}
+		return "echo: " + line, nil
+	}
+	if err := s.Run(strings.NewReader("bad\n:quit\n"), func(e string) { events = append(events, e) }, respond); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if joined := strings.Join(events, ""); !strings.Contains(joined, "repl: pipeline down") {
+		t.Errorf("responder error not reported:\n%s", joined)
 	}
 }
