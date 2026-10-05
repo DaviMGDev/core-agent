@@ -130,12 +130,15 @@ contract. The guest is built with
 `GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared` and committed beside the
 plugin; the host side embeds it.
 
-**Host ABI (current kernel surface).** Guests export `memento_declare`,
-`memento_activate`, `memento_revert_effect`, and `memory`; they import
-`memento.declare_inject`, `memento.declare_provide`,
-`memento.get_payload_len`, `memento.get_payload`, `memento.register_effect`,
-and `memento.log`. Strings cross as (pointer, length) pairs into guest memory.
-WASI stdio is wired for the REPL guest.
+**Host ABI (kernel surface).** Guests export `memento_declare`,
+`memento_activate`, `memento_revert_effect`, and `memory`, and may export
+`memento_alloc`/`memento_handle` to serve invocations; they import
+`memento.declare_inject`, `memento.declare_provide`, `memento.bind`,
+`memento.get_len`, `memento.get`, `memento.invoke`, `memento.get_payload_len`,
+`memento.get_payload`, `memento.register_effect`, and `memento.log`. Strings
+cross as (pointer, length) pairs into guest memory; the ABI's isolated
+contract lives in memento's `plugins/wasm/specs/`. WASI stdio is wired for the
+REPL guest.
 
 **Composition (starter keys).** One shared key registry maps guest key names to
 memento keys:
@@ -156,13 +159,11 @@ five-second quiescence window (memento documents the pattern in
 `examples/chat`); reconciliation stays the kernel mechanism for non-blocking
 compositions.
 
-**Provide binding adapter.** A wasm guest can declare a provide but cannot
-install a binding, and the kernel advertises a provided key only when its
-fiber owns the binding (`runtime.registerProvides` checks
-`context.LookupOwner`). The entry therefore wraps each wasm component in a
-small adapter that binds its declared provided keys to the fiber during
-activation. D11 proposes the upstream fix; until it lands, the entry binds on
-the guest's behalf through the public context API.
+**Registration.** A guest registers a provided key by binding its value during
+activation (`memento.bind`): the kernel installs the binding as a revertible
+fiber effect and advertises the key once the fiber owns it. A declared
+provide left unbound fails activation. The extended ABI (bind/get/invoke)
+landed upstream in memento's `plugins/wasm`, so the entry carries no adapter.
 
 **Sources of truth.** The charter is `init.pseudo`; this spec refines it.
 Plugin specifics live in the plugin specs.
@@ -174,9 +175,11 @@ provider; a withdrawn or replaced provider deactivates dependents first. The
 kernel refuses a second provider of the same key and refuses dependency cycles.
 
 **Effect discipline.** Every guest registers at least one effect during
-activation and implements `memento_revert_effect`; unloading replays inverses
-in LIFO order, and the host closes the module instance after the guest's
-inverses run. No guest writes cleanup paths outside this mechanism.
+activation, binds its declared provided keys (the registration is itself one
+of those tracked effects), and implements `memento_revert_effect`; unloading
+replays inverses in LIFO order, and the host closes the module instance after
+the guest's inverses run. No guest writes cleanup paths outside this
+mechanism.
 
 **REPL protocol.** `you> ` before each read; a response line after each
 non-command turn; `:help`, `:quit` (aliases `:q`, `:exit`) are commands; blank
@@ -250,7 +253,8 @@ beyond `plugins/` and `cmd/` in the first cut.
   (Charter open question 3.)
 - **D5 — Shared key registry.** All five components register against one
   `wasm.KeyRegistry`, so injection satisfaction and provider identity work
-  across plugins.
+  across plugins; each guest binds its provided values through the ABI, so the
+  registration is the guest's own tracked effect.
 - **D6 — Transport deferred, not patched.** The current host ABI exposes no
   network calls; provider-manager specifies the required upstream extension
   (`memento.http_request`, proposed to memento) and implements management
@@ -270,10 +274,8 @@ beyond `plugins/` and `cmd/` in the first cut.
   it, so tests and the entry need no rebuild step.
 - **D10 — Payloads.** JSON for configurable plugins, string for the REPL
   nickname; defaults live in `cmd/core-agent` and are overridable by entries.
-- **D11 — Provide binding is host-side until the kernel does it.** The
-  current wasm ABI can declare a provide but not bind it, so wasm-provided
-  keys are never advertised to dependents and cross-guest injection cannot
-  satisfy. The entry binds each guest's declared provided keys during
-  activation through the public context API (a system-level adapter, not a
-  kernel patch); the upstream fix — the wasm loader binding declared provides
-  itself, or a bind ABI — is proposed to memento.
+- **D11 — Provide binding is the guest's own effect.** The loader gained
+  `bind`/`get`/`invoke` upstream (memento `plugins/wasm`); each guest binds its
+declared provides during activation through `memento.bind`, and the temporary
+host-side binding adapter was removed. Nothing about registration is
+host-side anymore.
