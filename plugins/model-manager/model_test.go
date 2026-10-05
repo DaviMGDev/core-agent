@@ -161,3 +161,30 @@ func TestParseConfig(t *testing.T) {
 		t.Fatalf("ParseConfig(nil) = %v, %v; want empty", views, err)
 	}
 }
+
+func TestApplyOperations(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(View{Name: "fast", Alias: "llama"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	res, err := Apply(r, Op{Kind: "resolve", Name: "fast"})
+	if err != nil {
+		t.Fatalf("Apply(resolve): %v", err)
+	}
+	if res.Mode != ModeAlias || !reflect.DeepEqual(res.Models, []string{"llama"}) {
+		t.Fatalf("resolve = %+v, want alias [llama]", res)
+	}
+
+	res, err = Apply(r, Op{Kind: "respond", Model: "fast", Text: "hello"})
+	if err != nil {
+		t.Fatalf("Apply(respond): %v", err)
+	}
+	if res.Model != "llama" || res.Text != "[llama] hello" {
+		t.Fatalf("respond = %+v, want [llama] hello", res)
+	}
+
+	if _, err := Apply(r, Op{Kind: "sing"}); err == nil {
+		t.Fatal("Apply(unknown) = nil, want error")
+	}
+}

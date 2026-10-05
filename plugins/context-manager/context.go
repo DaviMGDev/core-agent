@@ -77,3 +77,27 @@ func ParseConfig(payload []byte) (Config, error) {
 	}
 	return c, nil
 }
+
+// Op is one operation requested over the context window.
+type Op struct {
+	Kind     string    `json:"op"`
+	Messages []Message `json:"messages,omitempty"`
+}
+
+// Result is the response of an operation.
+type Result struct {
+	Messages []Message `json:"messages,omitempty"`
+	Dropped  int       `json:"dropped,omitempty"`
+}
+
+// Apply runs one operation against the configured budget: "project" builds
+// the bounded window over the supplied turns.
+func Apply(budget int, op Op) (Result, error) {
+	switch op.Kind {
+	case "project":
+		w := Project(op.Messages, budget)
+		return Result{Messages: w.Messages, Dropped: w.Dropped}, nil
+	default:
+		return Result{}, fmt.Errorf("context-manager: unknown operation %q", op.Kind)
+	}
+}

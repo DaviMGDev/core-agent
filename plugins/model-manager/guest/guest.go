@@ -8,6 +8,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strconv"
 	"unsafe"
 
@@ -105,7 +106,7 @@ func mementoActivate() uint32 {
 		emit("model-manager: " + err.Error() + "\n")
 		return 1
 	}
-	registry := modelmanager.NewRegistry()
+	registry = modelmanager.NewRegistry()
 	for _, v := range views {
 		if err := registry.Register(v); err != nil {
 			emit("model-manager: " + err.Error() + "\n")
@@ -122,6 +123,48 @@ func mementoActivate() uint32 {
 	}
 	emit("model-manager: " + strconv.Itoa(len(views)) + " model view(s) ready\n")
 	return 0
+}
+
+// registry is the module instance's view registry, serving handlers.
+var registry *modelmanager.Registry
+
+// arena keeps handler buffers alive for the duration of one exchange.
+var arena [][]byte
+
+func byteSlice(ptr, n uint32) []byte {
+	if n == 0 {
+		return nil
+	}
+	return unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), n)
+}
+
+//go:wasmexport memento_alloc
+func mementoAlloc(size uint32) uint32 {
+	if size == 0 {
+		return 0
+	}
+	b := make([]byte, size)
+	arena = append(arena, b)
+	return uint32(uintptr(unsafe.Pointer(&b[0])))
+}
+
+//go:wasmexport memento_handle
+func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
+	defer func() { arena = arena[:0] }()
+	var op modelmanager.Op
+	if err := json.Unmarshal(byteSlice(reqPtr, reqLen), &op); err != nil {
+		return 0
+	}
+	result, err := modelmanager.Apply(registry, op)
+	if err != nil {
+		return 0
+	}
+	out, err := json.Marshal(result)
+	if err != nil || uint32(len(out)) > respMax {
+		return 0
+	}
+	copy(byteSlice(respPtr, respMax), out)
+	return uint32(len(out))
 }
 
 //go:wasmexport memento_revert_effect

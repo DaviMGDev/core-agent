@@ -111,3 +111,32 @@ func TestConcurrentAppends(t *testing.T) {
 		t.Fatalf("Len = %d after concurrent appends, want 50", n)
 	}
 }
+
+func TestApplyOperations(t *testing.T) {
+	s := NewStore()
+	res, err := Apply(s, Op{Kind: "append", Conversation: "main", Role: RoleUser, Text: "hello"})
+	if err != nil {
+		t.Fatalf("Apply(append): %v", err)
+	}
+	if res.Turn != 1 {
+		t.Fatalf("append Turn = %d, want 1", res.Turn)
+	}
+	if _, err := Apply(s, Op{Kind: "append", Conversation: "main", Role: RoleAssistant, Text: "hi"}); err != nil {
+		t.Fatalf("Apply(append assistant): %v", err)
+	}
+
+	res, err = Apply(s, Op{Kind: "recent", Conversation: "main", N: 2})
+	if err != nil {
+		t.Fatalf("Apply(recent): %v", err)
+	}
+	if len(res.Messages) != 2 || res.Messages[0].Text != "hello" || res.Messages[1].Text != "hi" {
+		t.Fatalf("recent = %+v, want [hello hi]", res.Messages)
+	}
+
+	if _, err := Apply(s, Op{Kind: "drop"}); err == nil {
+		t.Fatal("Apply(unknown) = nil, want error")
+	}
+	if _, err := Apply(s, Op{Kind: "append", Conversation: "main", Role: "system", Text: "x"}); err == nil {
+		t.Fatal("Apply(append, system) = nil, want role error")
+	}
+}

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"encoding/json"
 	"unsafe"
 
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
@@ -91,13 +92,55 @@ func mementoActivate() uint32 {
 	if !bindProvided([]byte(id)) {
 		return 2
 	}
-	store := chathistory.NewStore()
+	store = chathistory.NewStore()
 	if err := store.Start(id); err != nil {
 		emit("chat-history: " + err.Error() + "\n")
 		return 1
 	}
 	emit("chat-history: conversation \"" + id + "\" open\n")
 	return 0
+}
+
+// store is the module instance's record, serving handler operations.
+var store *chathistory.Store
+
+// arena keeps handler buffers alive for the duration of one exchange.
+var arena [][]byte
+
+func byteSlice(ptr, n uint32) []byte {
+	if n == 0 {
+		return nil
+	}
+	return unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), n)
+}
+
+//go:wasmexport memento_alloc
+func mementoAlloc(size uint32) uint32 {
+	if size == 0 {
+		return 0
+	}
+	b := make([]byte, size)
+	arena = append(arena, b)
+	return uint32(uintptr(unsafe.Pointer(&b[0])))
+}
+
+//go:wasmexport memento_handle
+func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
+	defer func() { arena = arena[:0] }()
+	var op chathistory.Op
+	if err := json.Unmarshal(byteSlice(reqPtr, reqLen), &op); err != nil {
+		return 0
+	}
+	result, err := chathistory.Apply(store, op)
+	if err != nil {
+		return 0
+	}
+	out, err := json.Marshal(result)
+	if err != nil || uint32(len(out)) > respMax {
+		return 0
+	}
+	copy(byteSlice(respPtr, respMax), out)
+	return uint32(len(out))
 }
 
 //go:wasmexport memento_revert_effect

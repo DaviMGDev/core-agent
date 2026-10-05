@@ -117,3 +117,34 @@ func clone(msgs []Message) []Message {
 	copy(out, msgs)
 	return out
 }
+
+// Op is one operation requested over the conversation record.
+type Op struct {
+	Kind         string `json:"op"`
+	Conversation string `json:"conversation"`
+	Role         string `json:"role,omitempty"`
+	Text         string `json:"text,omitempty"`
+	N            int    `json:"n,omitempty"`
+}
+
+// Result is the response of an operation.
+type Result struct {
+	Turn     int       `json:"turn,omitempty"`
+	Messages []Message `json:"messages,omitempty"`
+}
+
+// Apply runs one operation against the store: "append" records a turn and
+// returns the conversation length; "recent" serves the last n turns.
+func Apply(store *Store, op Op) (Result, error) {
+	switch op.Kind {
+	case "append":
+		if _, err := store.Append(op.Conversation, op.Role, op.Text); err != nil {
+			return Result{}, err
+		}
+		return Result{Turn: store.Len(op.Conversation)}, nil
+	case "recent":
+		return Result{Messages: store.Recent(op.Conversation, op.N)}, nil
+	default:
+		return Result{}, fmt.Errorf("chat-history: unknown operation %q", op.Kind)
+	}
+}

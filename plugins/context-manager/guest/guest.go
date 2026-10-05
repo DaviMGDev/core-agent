@@ -8,6 +8,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strconv"
 	"unsafe"
 
@@ -105,12 +106,54 @@ func mementoActivate() uint32 {
 		emit("context-manager: " + err.Error() + "\n")
 		return 1
 	}
-	budget := cfg.Budget
+	budget = cfg.Budget
 	if budget == 0 {
 		budget = contextmanager.DefaultBudget
 	}
 	emit("context-manager: window ready (budget " + strconv.Itoa(budget) + ")\n")
 	return 0
+}
+
+// budget is the module instance's configured window budget, serving handlers.
+var budget int
+
+// arena keeps handler buffers alive for the duration of one exchange.
+var arena [][]byte
+
+func byteSlice(ptr, n uint32) []byte {
+	if n == 0 {
+		return nil
+	}
+	return unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), n)
+}
+
+//go:wasmexport memento_alloc
+func mementoAlloc(size uint32) uint32 {
+	if size == 0 {
+		return 0
+	}
+	b := make([]byte, size)
+	arena = append(arena, b)
+	return uint32(uintptr(unsafe.Pointer(&b[0])))
+}
+
+//go:wasmexport memento_handle
+func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
+	defer func() { arena = arena[:0] }()
+	var op contextmanager.Op
+	if err := json.Unmarshal(byteSlice(reqPtr, reqLen), &op); err != nil {
+		return 0
+	}
+	result, err := contextmanager.Apply(budget, op)
+	if err != nil {
+		return 0
+	}
+	out, err := json.Marshal(result)
+	if err != nil || uint32(len(out)) > respMax {
+		return 0
+	}
+	copy(byteSlice(respPtr, respMax), out)
+	return uint32(len(out))
 }
 
 //go:wasmexport memento_revert_effect

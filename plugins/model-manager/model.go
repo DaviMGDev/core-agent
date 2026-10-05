@@ -177,3 +177,45 @@ func ParseConfig(payload []byte) ([]View, error) {
 	}
 	return c.Models, nil
 }
+
+// Op is one operation requested over the view registry.
+type Op struct {
+	Kind  string `json:"op"`
+	Name  string `json:"name,omitempty"`
+	Model string `json:"model,omitempty"`
+	Text  string `json:"text,omitempty"`
+}
+
+// Result is the response of an operation.
+type Result struct {
+	Mode   Mode     `json:"mode,omitempty"`
+	Models []string `json:"models,omitempty"`
+	Model  string   `json:"model,omitempty"`
+	Text   string   `json:"text,omitempty"`
+}
+
+// Apply runs one operation against the registry: "resolve" returns the
+// flattened resolution of a name; "respond" resolves the requested model and
+// answers with its first concrete model (the first cut, pending transport).
+func Apply(r *Registry, op Op) (Result, error) {
+	switch op.Kind {
+	case "resolve":
+		res, err := r.Resolve(op.Name)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{Mode: res.Mode, Models: res.Models}, nil
+	case "respond":
+		res, err := r.Resolve(op.Model)
+		if err != nil {
+			return Result{}, err
+		}
+		if len(res.Models) == 0 {
+			return Result{}, fmt.Errorf("model-manager: %q resolves to no model", op.Model)
+		}
+		model := res.Models[0]
+		return Result{Model: model, Text: "[" + model + "] " + op.Text}, nil
+	default:
+		return Result{}, fmt.Errorf("model-manager: unknown operation %q", op.Kind)
+	}
+}

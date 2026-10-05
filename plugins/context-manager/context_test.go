@@ -89,3 +89,20 @@ func TestParseConfig(t *testing.T) {
 		t.Fatal("ParseConfig(invalid) = nil, want error")
 	}
 }
+
+func TestApplyProject(t *testing.T) {
+	history := []Message{{Text: "aaa"}, {Text: "bbb"}, {Text: "cc"}}
+	res, err := Apply(5, Op{Kind: "project", Messages: history})
+	if err != nil {
+		t.Fatalf("Apply(project): %v", err)
+	}
+	if got := texts(res.Messages); !reflect.DeepEqual(got, []string{"bbb", "cc"}) {
+		t.Fatalf("project = %v, want [bbb cc]", got)
+	}
+	if res.Dropped != 1 {
+		t.Fatalf("Dropped = %d, want 1", res.Dropped)
+	}
+	if _, err := Apply(5, Op{Kind: "echo"}); err == nil {
+		t.Fatal("Apply(unknown) = nil, want error")
+	}
+}
