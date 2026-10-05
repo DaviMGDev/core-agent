@@ -158,9 +158,7 @@ session, and unloads on exit. The scheduler path is deliberate: the REPL's
 activation hosts the interactive session, which outlives the loader's
 five-second quiescence window (memento documents the pattern in
 `examples/chat`); reconciliation stays the kernel mechanism for non-blocking
-compositions. `cmd/mock-llm` is a development aid alongside the entry: an
-OpenAI-compatible chat completions server with a deterministic reply, so the
-composed system runs without a real provider.
+compositions.
 
 **Registration.** A guest registers a provided key by binding its value during
 activation (`memento.bind`): the kernel installs the binding as a revertible
@@ -216,9 +214,7 @@ management plugins, a nickname string for repl-chat. The assembler provides
 defaults in `cmd/` and may override them with entries. The provider document
 lists, per provider, the concrete models it serves (the model-to-endpoint
 mapping); an entry wires the loader's HTTP transport and its credential
-resolver (`env:VAR` → host environment). `cmd/core-agent -provider-config`
-and `-model-config` replace the built-in documents, which is how a session is
-pointed at `cmd/mock-llm`.
+resolver (`env:VAR` → host environment).
 
 ## Conformance
 

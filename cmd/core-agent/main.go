@@ -94,21 +94,17 @@ func starterPlugins(cfg sessionConfig) []plugin {
 
 func main() {
 	nick := flag.String("nick", DefaultNick, "nickname the REPL announces")
-	providers := flag.String("provider-config", "", "provider document JSON; empty uses the built-in providers")
-	models := flag.String("model-config", "", "model view document JSON; empty uses the built-in views")
 	flag.Parse()
-
-	cfg := defaultConfig(*nick)
-	if *providers != "" {
-		cfg.providers = *providers
-	}
-	if *models != "" {
-		cfg.models = *models
-	}
-	if err := runConfig(context.Background(), os.Stdin, os.Stdout, cfg); err != nil {
+	if err := run(context.Background(), os.Stdin, os.Stdout, *nick); err != nil {
 		fmt.Fprintln(os.Stderr, "core-agent:", err)
 		os.Exit(1)
 	}
+}
+
+// run composes the five plugins, hosts one REPL session on in/out, and
+// unloads everything before returning.
+func run(ctx context.Context, in io.Reader, out io.Writer, nick string) error {
+	return runConfig(ctx, in, out, defaultConfig(nick))
 }
 
 // runConfig composes the five plugins from cfg, hosts one REPL session on
