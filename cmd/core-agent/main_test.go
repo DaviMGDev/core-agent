@@ -28,7 +28,7 @@ func (t *transcript) String() string {
 
 func TestRunHostsAScriptedSession(t *testing.T) {
 	var out transcript
-	in := strings.NewReader("hello there\n:help\n:quit\n")
+	in := strings.NewReader("hello there\nsecond question\n:help\n:quit\n")
 	if err := run(context.Background(), in, &out, "tester"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -41,7 +41,8 @@ func TestRunHostsAScriptedSession(t *testing.T) {
 		`context-manager: window ready (budget 4096)`,
 		`repl: tester joined`,
 		`you> `,
-		`turn 1: hello there`,
+		`[llama-3.2] hello there (context:1)`,
+		`[llama-3.2] second question (context:3)`,
 		`commands: :help, :quit`,
 	} {
 		if !strings.Contains(got, want) {
