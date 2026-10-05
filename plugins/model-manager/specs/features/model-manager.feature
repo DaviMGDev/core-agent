@@ -74,3 +74,9 @@ Feature: model-manager views and resolution
       And no model caller is configured
       When the model "fast" is asked to respond
       Then the response fails
+
+    Scenario: The mock caller echoes the model and the context size
+      Given a registry with view "fast" as alias of "gpt"
+      When the model "fast" is asked to respond
+      Then the answer comes from "gpt"
+      And the answer text is "mock(gpt) (context:0)"

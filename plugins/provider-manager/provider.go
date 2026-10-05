@@ -20,18 +20,30 @@ var ErrDuplicate = errors.New("provider-manager: duplicate provider name")
 // Provider identifies one AI provider endpoint. Credential is a non-secret
 // reference such as "env:OPENAI_API_KEY", never a literal secret. Models lists
 // the concrete model names the provider serves, which is how model-manager
-// maps a resolved model to an endpoint.
+// maps a resolved model to an endpoint. Mock providers answer in-process,
+// through the model-manager mock caller, and need neither an endpoint nor a
+// credential.
 type Provider struct {
 	Name       string   `json:"name"`
-	Endpoint   string   `json:"endpoint"`
-	Credential string   `json:"credential"`
+	Endpoint   string   `json:"endpoint,omitempty"`
+	Credential string   `json:"credential,omitempty"`
 	Models     []string `json:"models,omitempty"`
+	Mock       bool     `json:"mock,omitempty"`
 }
 
-// Validate checks a provider definition.
+// Validate checks a provider definition. A mock provider needs only a name and
+// its served models: it answers in-process and never dials out.
 func Validate(p Provider) error {
 	if strings.TrimSpace(p.Name) == "" {
 		return errors.New("provider-manager: empty provider name")
+	}
+	for _, m := range p.Models {
+		if strings.TrimSpace(m) == "" {
+			return fmt.Errorf("provider-manager: provider %q lists an empty model", p.Name)
+		}
+	}
+	if p.Mock {
+		return nil
 	}
 	if strings.TrimSpace(p.Credential) == "" {
 		return fmt.Errorf("provider-manager: provider %q has no credential reference", p.Name)
@@ -39,11 +51,6 @@ func Validate(p Provider) error {
 	u, err := url.Parse(p.Endpoint)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return fmt.Errorf("provider-manager: provider %q endpoint %q is not an absolute http(s) URL", p.Name, p.Endpoint)
-	}
-	for _, m := range p.Models {
-		if strings.TrimSpace(m) == "" {
-			return fmt.Errorf("provider-manager: provider %q lists an empty model", p.Name)
-		}
 	}
 	return nil
 }

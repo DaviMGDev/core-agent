@@ -244,3 +244,34 @@ func TestApplyFallbackExhaustionFails(t *testing.T) {
 		t.Fatal("Apply(respond) = nil, want an exhaustion error")
 	}
 }
+
+func TestMockCallerEchoesModelAndContext(t *testing.T) {
+	caller := MockCaller{}
+	got, err := caller.Complete("gpt", []ContextMessage{
+		{Role: "user", Text: "first"},
+		{Role: "assistant", Text: "reply"},
+		{Role: "user", Text: "second"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if want := "mock(gpt): second (context:3)"; got != want {
+		t.Fatalf("Complete = %q, want %q", got, want)
+	}
+
+	got, err = caller.Complete("gpt", nil)
+	if err != nil {
+		t.Fatalf("Complete(empty): %v", err)
+	}
+	if want := "mock(gpt) (context:0)"; got != want {
+		t.Fatalf("Complete(empty) = %q, want %q", got, want)
+	}
+
+	got, err = caller.Complete("gpt", []ContextMessage{{Role: "assistant", Text: "only"}})
+	if err != nil {
+		t.Fatalf("Complete(no user): %v", err)
+	}
+	if want := "mock(gpt): only (context:1)"; got != want {
+		t.Fatalf("Complete(no user) = %q, want the last message", got)
+	}
+}

@@ -113,3 +113,28 @@ func TestRunCallsTheProviderOverHTTP(t *testing.T) {
 		}
 	}
 }
+
+// TestRunMockLLMAnswersWithoutProvider runs a session with the in-process mock
+// provider: no server, no network, and the same pipeline.
+func TestRunMockLLMAnswersWithoutProvider(t *testing.T) {
+	cfg := defaultConfig("tester")
+	cfg.providers = mockProviderConfig
+
+	var out transcript
+	in := strings.NewReader("hello there\n:quit\n")
+	if err := runConfig(context.Background(), in, &out, cfg); err != nil {
+		t.Fatalf("runConfig: %v", err)
+	}
+	got := out.String()
+
+	for _, want := range []string{
+		`provider-manager: 1 provider(s) ready`,
+		`mock(llama-3.2): hello there (context:1)`,
+		`repl: session closed`,
+		`provider-manager: providers released`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("transcript missing %q:\n%s", want, got)
+		}
+	}
+}

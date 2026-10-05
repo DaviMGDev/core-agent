@@ -38,6 +38,11 @@ const (
 		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","credential":"env:CORE_AGENT_LOCAL_KEY","models":["llama-3.2"]},` +
 		`{"name":"openai","endpoint":"https://api.openai.com/v1","credential":"env:OPENAI_API_KEY","models":["gpt-4o-mini"]}]}`
 
+	// mockProviderConfig backs -mock: one in-process mock provider serving the
+	// models the default views resolve to, so a session answers without a
+	// provider and without a single request leaving the process.
+	mockProviderConfig = `{"providers":[{"name":"mock","mock":true,"models":["llama-3.2","gpt-4o-mini"]}]}`
+
 	modelConfig = `{"models":[` +
 		`{"name":"fast","alias":"llama-3.2"},` +
 		`{"name":"reliable","fallback":["llama-3.2","gpt-4o-mini"]},` +
@@ -94,17 +99,17 @@ func starterPlugins(cfg sessionConfig) []plugin {
 
 func main() {
 	nick := flag.String("nick", DefaultNick, "nickname the REPL announces")
+	mock := flag.Bool("mock", false, "answer with an in-process mock LLM instead of calling a provider")
 	flag.Parse()
-	if err := run(context.Background(), os.Stdin, os.Stdout, *nick); err != nil {
+
+	cfg := defaultConfig(*nick)
+	if *mock {
+		cfg.providers = mockProviderConfig
+	}
+	if err := runConfig(context.Background(), os.Stdin, os.Stdout, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "core-agent:", err)
 		os.Exit(1)
 	}
-}
-
-// run composes the five plugins, hosts one REPL session on in/out, and
-// unloads everything before returning.
-func run(ctx context.Context, in io.Reader, out io.Writer, nick string) error {
-	return runConfig(ctx, in, out, defaultConfig(nick))
 }
 
 // runConfig composes the five plugins from cfg, hosts one REPL session on

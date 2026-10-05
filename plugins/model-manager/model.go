@@ -208,6 +208,28 @@ type Caller interface {
 	Complete(model string, messages []ContextMessage) (string, error)
 }
 
+// MockCaller answers without a provider: it echoes the model, the last user
+// message, and the context size. It implements Caller, so a composition mocks
+// the LLM by config alone — a provider marked mock — with no network at all.
+type MockCaller struct{}
+
+// Complete returns the deterministic mock reply.
+func (MockCaller) Complete(model string, messages []ContextMessage) (string, error) {
+	text := ""
+	for _, m := range messages {
+		if strings.EqualFold(m.Role, "user") {
+			text = m.Text
+		}
+	}
+	if text == "" && len(messages) > 0 {
+		text = messages[len(messages)-1].Text
+	}
+	if text == "" {
+		return fmt.Sprintf("mock(%s) (context:%d)", model, len(messages)), nil
+	}
+	return fmt.Sprintf("mock(%s): %s (context:%d)", model, text, len(messages)), nil
+}
+
 // Apply runs one operation against the registry: "resolve" returns the
 // flattened resolution of a name; "respond" resolves the requested model and
 // answers through the caller. A fallback view tries its targets in order and

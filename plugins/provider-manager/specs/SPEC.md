@@ -24,13 +24,18 @@ model to an endpoint through the registry this plugin publishes.
 
 ## Semantics
 
-- A provider is `{name, endpoint, credential, models}`:
+- A provider is `{name, endpoint, credential, models, mock}`:
   - `name` is non-empty and unique in the registry;
-  - `endpoint` is an absolute `http` or `https` URL with a host;
+  - `endpoint` is an absolute `http` or `https` URL with a host; required
+    unless `mock` is set;
   - `credential` is a non-secret reference (`env:VAR` style), never a literal
-    secret in the payload, substituted host-side at request time;
+    secret in the payload, substituted host-side at request time; required
+    unless `mock` is set;
   - `models` lists the concrete model names the provider serves, in no
-    particular order; it may be empty.
+    particular order; it may be empty;
+  - `mock`, when set, makes the provider answer in-process: it needs neither an
+    endpoint nor a credential, and model-manager replies through its mock
+    caller instead of performing an exchange.
 - `Register` validates and appends; a duplicate name is refused with an error
   and the registry is unchanged.
 - `List` returns providers in insertion order; `Get` and `Remove` address by
@@ -94,3 +99,6 @@ checks.
 - **PM4 — Providers declare the models they serve.** `models` is the
   model-to-endpoint mapping; a concrete model that no provider lists is a
   dangling reference, and a call for it fails loudly.
+- **PM5 — A mock provider is a provider.** Mocking the LLM is configuration,
+  not a separate server: `mock` marks a provider that answers in-process, so
+  the same composition runs with or without a real endpoint.

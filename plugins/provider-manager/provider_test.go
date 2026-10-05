@@ -186,3 +186,17 @@ func TestProviderForUsesInsertionOrder(t *testing.T) {
 		t.Fatalf("ProviderFor(shared) = %+v, %v; want the first provider", p, ok)
 	}
 }
+
+func TestMockProviderNeedsNoEndpointOrCredential(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(Provider{Name: "mock", Mock: true, Models: []string{"llama-3.2"}}); err != nil {
+		t.Fatalf("Register(mock): %v", err)
+	}
+	p, ok := r.ProviderFor("llama-3.2")
+	if !ok || !p.Mock || p.Name != "mock" {
+		t.Fatalf("ProviderFor(llama-3.2) = %+v, %v; want the mock provider", p, ok)
+	}
+	if _, ok := r.ProviderFor("unserved"); ok {
+		t.Fatal("ProviderFor(unserved) = ok, want absent")
+	}
+}

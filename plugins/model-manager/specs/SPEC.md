@@ -21,8 +21,10 @@ activates only when providers are available.
 The first cut implements registration, resolution, and response selection. A
 response reaches a provider: the guest resolves the concrete model to an
 endpoint and a credential reference through the injected provider registry and
-performs the exchange over the loader's host-mediated HTTP transport.
-Orchestration of a discussion is still deferred.
+performs the exchange over the loader's host-mediated HTTP transport; a
+provider marked `mock` answers in-process through `MockCaller` instead, so a
+composition runs with no network. Orchestration of a discussion is still
+deferred.
 
 ## Semantics
 
@@ -107,3 +109,7 @@ view storage; the transport itself, which the loader owns.
   guest implements `Caller` over the loader's HTTP transport, mapping a
   concrete model to a provider through the injected registry. The library
   never imports provider-manager.
+- **MM5 — A mock caller answers without a provider.** `MockCaller` implements
+  the same `Caller` seam and echoes the model, the last user message, and the
+  context size. A provider marked `mock` routes to it in the guest, so the
+  LLM is mocked by config alone, with no network and no server.

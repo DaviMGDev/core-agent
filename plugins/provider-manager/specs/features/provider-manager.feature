@@ -58,3 +58,11 @@ Feature: provider-manager registry
       Given an empty provider registry
       When a provider "local" at "https://local.example/v1" serving "llama-3.2" is registered
       Then "gpt-4o-mini" has no provider
+
+  Rule: Mock providers answer in-process
+
+    Scenario: A mock provider needs neither endpoint nor credential
+      Given an empty provider registry
+      When a mock provider "mock" serving "llama-3.2" is registered
+      Then the registry contains "mock"
+      And "llama-3.2" is served by "mock"

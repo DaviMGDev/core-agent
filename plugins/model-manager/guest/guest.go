@@ -175,6 +175,7 @@ type provider struct {
 	Endpoint   string   `json:"endpoint"`
 	Credential string   `json:"credential"`
 	Models     []string `json:"models"`
+	Mock       bool     `json:"mock"`
 }
 
 type providerRegistry struct {
@@ -235,6 +236,9 @@ func (caller) Complete(model string, messages []modelmanager.ContextMessage) (st
 	p, ok := providerFor(model)
 	if !ok {
 		return "", fmt.Errorf("model-manager: no provider serves model %q", model)
+	}
+	if p.Mock {
+		return modelmanager.MockCaller{}.Complete(model, messages)
 	}
 	msgs := make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
