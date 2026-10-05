@@ -78,8 +78,11 @@ the contract needs.
   local shape so the package stays independent of provider-manager.
 - Transport: a response calls `http_request` with
   `{method, url, headers, body}` for `POST <endpoint>/chat/completions`,
-  mapping context messages to `messages`; the credential crosses as an
-  `env:VAR` reference the host substitutes.
+  mapping context messages to `messages`. When the provider carries a
+  credential, it crosses as an `env:VAR` reference the host substitutes and is
+  sent as `Authorization: Bearer`; a keyless provider sends no Authorization
+  header. A provider error is reported with its status and body, so the
+  failure reaches the transcript.
 - Payload: JSON `{"models":[{"name","alias"|"fallback"|"discuss"}]}`.
 - Effect inverse on unload: `model-manager: model views released`.
 

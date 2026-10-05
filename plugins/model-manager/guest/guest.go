@@ -248,14 +248,15 @@ func (caller) Complete(model string, messages []modelmanager.ContextMessage) (st
 	if err != nil {
 		return "", err
 	}
+	headers := map[string]string{"content-type": "application/json"}
+	if p.Credential != "" {
+		headers["authorization"] = "Bearer " + p.Credential
+	}
 	doc, err := json.Marshal(httpRequestDoc{
-		Method: "POST",
-		URL:    strings.TrimRight(p.Endpoint, "/") + "/chat/completions",
-		Headers: map[string]string{
-			"content-type":  "application/json",
-			"authorization": "Bearer " + p.Credential,
-		},
-		Body: string(body),
+		Method:  "POST",
+		URL:     strings.TrimRight(p.Endpoint, "/") + "/chat/completions",
+		Headers: headers,
+		Body:    string(body),
 	})
 	if err != nil {
 		return "", err
@@ -281,7 +282,14 @@ func decodeCompletion(providerName string, buf []byte) (string, error) {
 		return "", fmt.Errorf("model-manager: decoding response document: %w", err)
 	}
 	if resp.Status < 200 || resp.Status >= 300 {
-		return "", fmt.Errorf("model-manager: provider %q returned status %d", providerName, resp.Status)
+		detail := strings.TrimSpace(resp.Body)
+		if len(detail) > 200 {
+			detail = detail[:200]
+		}
+		if detail == "" {
+			return "", fmt.Errorf("model-manager: provider %q returned status %d", providerName, resp.Status)
+		}
+		return "", fmt.Errorf("model-manager: provider %q returned status %d: %s", providerName, resp.Status, detail)
 	}
 	var completion chatResponse
 	if err := json.Unmarshal([]byte(resp.Body), &completion); err != nil {
@@ -325,6 +333,7 @@ func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 	}
 	result, err := modelmanager.Apply(registry, op, caller{})
 	if err != nil {
+		emit(err.Error() + "\n")
 		return 0
 	}
 	out, err := json.Marshal(result)

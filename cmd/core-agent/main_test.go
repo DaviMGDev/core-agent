@@ -138,3 +138,42 @@ func TestRunMockLLMAnswersWithoutProvider(t *testing.T) {
 		}
 	}
 }
+
+// TestRunWithoutCredentialSendsNoAuthorization covers a keyless provider such
+// as a local runtime: the request goes out with no Authorization header.
+func TestRunWithoutCredentialSendsNoAuthorization(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		auth string
+		seen bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth, seen = r.Header.Get("Authorization"), true
+		mu.Unlock()
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"keyless ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	cfg := defaultConfig("tester")
+	cfg.providers = fmt.Sprintf(`{"providers":[{"name":"local","endpoint":%q,"models":["llama-3.2"]}]}`, srv.URL)
+
+	var out transcript
+	in := strings.NewReader("hello\n:quit\n")
+	if err := runConfig(context.Background(), in, &out, cfg); err != nil {
+		t.Fatalf("runConfig: %v", err)
+	}
+	if !strings.Contains(out.String(), "keyless ok") {
+		t.Fatalf("transcript missing the provider answer:\n%s", out.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !seen {
+		t.Fatal("provider was never called")
+	}
+	if auth != "" {
+		t.Fatalf("authorization = %q, want no header for a keyless provider", auth)
+	}
+}
