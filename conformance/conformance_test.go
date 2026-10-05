@@ -92,8 +92,11 @@ type world struct {
 	parsed    []providermanager.Provider
 
 	// model-manager
-	models *modelmanager.Registry
-	res    modelmanager.Resolution
+	models   *modelmanager.Registry
+	res      modelmanager.Resolution
+	caller   *stubCaller
+	noCaller bool
+	answer   modelmanager.Result
 
 	// chat-history
 	store *chathistory.Store

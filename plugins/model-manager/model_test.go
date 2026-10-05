@@ -1,6 +1,8 @@
 package modelmanager
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -162,13 +164,27 @@ func TestParseConfig(t *testing.T) {
 	}
 }
 
+// stubCaller records the models it was asked for and answers deterministically.
+type stubCaller struct {
+	calls  []string
+	failOn map[string]bool
+}
+
+func (c *stubCaller) Complete(model string, messages []ContextMessage) (string, error) {
+	c.calls = append(c.calls, model)
+	if c.failOn[model] {
+		return "", errors.New("call failed: " + model)
+	}
+	return fmt.Sprintf("%s(%d)", model, len(messages)), nil
+}
+
 func TestApplyOperations(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(View{Name: "fast", Alias: "llama"}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	res, err := Apply(r, Op{Kind: "resolve", Name: "fast"})
+	res, err := Apply(r, Op{Kind: "resolve", Name: "fast"}, nil)
 	if err != nil {
 		t.Fatalf("Apply(resolve): %v", err)
 	}
@@ -176,23 +192,55 @@ func TestApplyOperations(t *testing.T) {
 		t.Fatalf("resolve = %+v, want alias [llama]", res)
 	}
 
-	res, err = Apply(r, Op{Kind: "respond", Model: "fast", Text: "hello"})
+	caller := &stubCaller{}
+	res, err = Apply(r, Op{Kind: "respond", Model: "fast", Text: "hello"}, caller)
 	if err != nil {
 		t.Fatalf("Apply(respond): %v", err)
 	}
-	if res.Model != "llama" || res.Text != "[llama] hello (context:0)" {
-		t.Fatalf("respond = %+v, want [llama] hello (context:0)", res)
+	if res.Model != "llama" || res.Text != "llama(0)" {
+		t.Fatalf("respond = %+v, want the caller's answer for llama", res)
 	}
 
-	withContext, err := Apply(r, Op{Kind: "respond", Model: "fast", Text: "hi", Context: []ContextMessage{{Role: "user", Text: "x"}}})
+	withContext, err := Apply(r, Op{Kind: "respond", Model: "fast", Context: []ContextMessage{{Role: "user", Text: "x"}}}, caller)
 	if err != nil {
 		t.Fatalf("Apply(respond with context): %v", err)
 	}
-	if withContext.Text != "[llama] hi (context:1)" {
-		t.Fatalf("respond with context = %+v, want context:1", withContext)
+	if withContext.Text != "llama(1)" {
+		t.Fatalf("respond with context = %+v, want the caller to see one message", withContext)
 	}
 
-	if _, err := Apply(r, Op{Kind: "sing"}); err == nil {
+	if _, err := Apply(r, Op{Kind: "respond", Model: "fast"}, nil); err == nil {
+		t.Fatal("Apply(respond without caller) = nil, want error")
+	}
+	if _, err := Apply(r, Op{Kind: "sing"}, caller); err == nil {
 		t.Fatal("Apply(unknown) = nil, want error")
+	}
+}
+
+func TestApplyFallbackTriesTargetsInOrder(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(View{Name: "reliable", Fallback: []string{"a", "b"}}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	caller := &stubCaller{failOn: map[string]bool{"a": true}}
+
+	res, err := Apply(r, Op{Kind: "respond", Model: "reliable"}, caller)
+	if err != nil {
+		t.Fatalf("Apply(respond): %v", err)
+	}
+	if res.Model != "b" || !reflect.DeepEqual(caller.calls, []string{"a", "b"}) {
+		t.Fatalf("respond = %+v with calls %v, want b after trying a then b", res, caller.calls)
+	}
+}
+
+func TestApplyFallbackExhaustionFails(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(View{Name: "reliable", Fallback: []string{"a", "b"}}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	caller := &stubCaller{failOn: map[string]bool{"a": true, "b": true}}
+
+	if _, err := Apply(r, Op{Kind: "respond", Model: "reliable"}, caller); err == nil {
+		t.Fatal("Apply(respond) = nil, want an exhaustion error")
 	}
 }

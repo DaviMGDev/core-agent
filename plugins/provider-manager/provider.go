@@ -1,6 +1,8 @@
 // Package providermanager manages the provider side of the system: the
-// registry behind the "provider-registry" key. Transport (HTTP) is deferred
-// to the upstream ABI proposal; this package is management only.
+// registry behind the "provider-registry" key. It stores endpoints and
+// credential references and records the models each provider serves; the
+// actual exchange is performed by model-manager over the loader's HTTP
+// transport.
 package providermanager
 
 import (
@@ -16,11 +18,14 @@ import (
 var ErrDuplicate = errors.New("provider-manager: duplicate provider name")
 
 // Provider identifies one AI provider endpoint. Credential is a non-secret
-// reference such as "env:OPENAI_API_KEY", never a literal secret.
+// reference such as "env:OPENAI_API_KEY", never a literal secret. Models lists
+// the concrete model names the provider serves, which is how model-manager
+// maps a resolved model to an endpoint.
 type Provider struct {
-	Name       string `json:"name"`
-	Endpoint   string `json:"endpoint"`
-	Credential string `json:"credential"`
+	Name       string   `json:"name"`
+	Endpoint   string   `json:"endpoint"`
+	Credential string   `json:"credential"`
+	Models     []string `json:"models,omitempty"`
 }
 
 // Validate checks a provider definition.
@@ -34,6 +39,11 @@ func Validate(p Provider) error {
 	u, err := url.Parse(p.Endpoint)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return fmt.Errorf("provider-manager: provider %q endpoint %q is not an absolute http(s) URL", p.Name, p.Endpoint)
+	}
+	for _, m := range p.Models {
+		if strings.TrimSpace(m) == "" {
+			return fmt.Errorf("provider-manager: provider %q lists an empty model", p.Name)
+		}
 	}
 	return nil
 }
@@ -93,6 +103,20 @@ func (r *Registry) Remove(name string) error {
 		}
 	}
 	return nil
+}
+
+// ProviderFor returns the first provider, in insertion order, that lists the
+// given concrete model.
+func (r *Registry) ProviderFor(model string) (Provider, bool) {
+	for _, name := range r.order {
+		p := r.providers[name]
+		for _, m := range p.Models {
+			if m == model {
+				return p, true
+			}
+		}
+	}
+	return Provider{}, false
 }
 
 type config struct {

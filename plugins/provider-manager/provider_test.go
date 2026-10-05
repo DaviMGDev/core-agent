@@ -2,6 +2,7 @@ package providermanager
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -23,7 +24,7 @@ func TestRegisterAndGet(t *testing.T) {
 	if !ok {
 		t.Fatal("Get(openai): not found")
 	}
-	if got != p {
+	if !reflect.DeepEqual(got, p) {
 		t.Fatalf("Get(openai) = %+v, want %+v", got, p)
 	}
 	if r.Len() != 1 {
@@ -142,5 +143,46 @@ func TestParseConfigEmpty(t *testing.T) {
 func TestParseConfigInvalid(t *testing.T) {
 	if _, err := ParseConfig([]byte("not json")); err == nil {
 		t.Fatal("ParseConfig(invalid) = nil, want error")
+	}
+}
+
+func TestValidateRejectsEmptyModel(t *testing.T) {
+	p := Provider{Name: "openai", Endpoint: "https://api.example.com/v1", Credential: "env:KEY", Models: []string{"gpt-4o-mini", " "}}
+	if err := Validate(p); err == nil {
+		t.Fatal("Validate with an empty model = nil, want error")
+	}
+}
+
+func TestProviderFor(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(Provider{Name: "local", Endpoint: "http://127.0.0.1:11434/v1", Credential: "env:LOCAL_KEY", Models: []string{"llama-3.2"}}); err != nil {
+		t.Fatalf("Register(local): %v", err)
+	}
+	if err := r.Register(Provider{Name: "openai", Endpoint: "https://api.openai.com/v1", Credential: "env:OPENAI_API_KEY", Models: []string{"gpt-4o-mini"}}); err != nil {
+		t.Fatalf("Register(openai): %v", err)
+	}
+
+	p, ok := r.ProviderFor("gpt-4o-mini")
+	if !ok || p.Name != "openai" {
+		t.Fatalf("ProviderFor(gpt-4o-mini) = %+v, %v; want openai", p, ok)
+	}
+	if _, ok := r.ProviderFor("unknown"); ok {
+		t.Fatal("ProviderFor(unknown) = ok, want absent")
+	}
+}
+
+func TestProviderForUsesInsertionOrder(t *testing.T) {
+	r := NewRegistry()
+	for _, p := range []Provider{
+		{Name: "first", Endpoint: "https://a.example/v1", Credential: "env:A", Models: []string{"shared"}},
+		{Name: "second", Endpoint: "https://b.example/v1", Credential: "env:B", Models: []string{"shared"}},
+	} {
+		if err := r.Register(p); err != nil {
+			t.Fatalf("Register(%s): %v", p.Name, err)
+		}
+	}
+	p, ok := r.ProviderFor("shared")
+	if !ok || p.Name != "first" {
+		t.Fatalf("ProviderFor(shared) = %+v, %v; want the first provider", p, ok)
 	}
 }

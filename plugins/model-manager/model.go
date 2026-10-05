@@ -1,7 +1,8 @@
 // Package modelmanager manages model views: aliases, fallback chains, and
-// discussion groups resolved over the provider registry. Orchestration of an
-// actual discussion is deferred with the transport ABI; resolution is fixed
-// here.
+// discussion groups resolved over the provider registry. Resolution and
+// response selection are fixed here; the model call itself arrives through a
+// Caller, which the wasm guest implements over the loader's HTTP transport.
+// Orchestration of a discussion is still deferred.
 package modelmanager
 
 import (
@@ -201,10 +202,18 @@ type Result struct {
 	Text   string   `json:"text,omitempty"`
 }
 
+// Caller performs one model completion. The implementation owns provider
+// resolution and transport; the registry owns view resolution.
+type Caller interface {
+	Complete(model string, messages []ContextMessage) (string, error)
+}
+
 // Apply runs one operation against the registry: "resolve" returns the
 // flattened resolution of a name; "respond" resolves the requested model and
-// answers with its first concrete model (the first cut, pending transport).
-func Apply(r *Registry, op Op) (Result, error) {
+// answers through the caller. A fallback view tries its targets in order and
+// returns the first answer; every other view answers with its first concrete
+// model. A response without a caller is refused.
+func Apply(r *Registry, op Op, caller Caller) (Result, error) {
 	switch op.Kind {
 	case "resolve":
 		res, err := r.Resolve(op.Name)
@@ -220,11 +229,25 @@ func Apply(r *Registry, op Op) (Result, error) {
 		if len(res.Models) == 0 {
 			return Result{}, fmt.Errorf("model-manager: %q resolves to no model", op.Model)
 		}
-		model := res.Models[0]
-		return Result{
-			Model: model,
-			Text:  fmt.Sprintf("[%s] %s (context:%d)", model, op.Text, len(op.Context)),
-		}, nil
+		if caller == nil {
+			return Result{}, errors.New("model-manager: no model caller configured")
+		}
+		if res.Mode == ModeFallback {
+			var lastErr error
+			for _, model := range res.Models {
+				text, err := caller.Complete(model, op.Context)
+				if err == nil {
+					return Result{Model: model, Text: text}, nil
+				}
+				lastErr = err
+			}
+			return Result{}, fmt.Errorf("model-manager: fallback %q exhausted: %w", op.Model, lastErr)
+		}
+		text, err := caller.Complete(res.Models[0], op.Context)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{Model: res.Models[0], Text: text}, nil
 	default:
 		return Result{}, fmt.Errorf("model-manager: unknown operation %q", op.Kind)
 	}

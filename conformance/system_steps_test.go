@@ -470,14 +470,30 @@ func stepCycleInsertion(ctx context.Context) error {
 
 const (
 	sysProviderConfig = `{"providers":[` +
-		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","credential":"env:CORE_AGENT_LOCAL_KEY"},` +
-		`{"name":"openai","endpoint":"https://api.openai.com/v1","credential":"env:OPENAI_API_KEY"}]}`
+		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","credential":"env:CORE_AGENT_LOCAL_KEY","models":["llama-3.2"]},` +
+		`{"name":"openai","endpoint":"https://api.openai.com/v1","credential":"env:OPENAI_API_KEY","models":["gpt-4o-mini"]}]}`
 	sysModelConfig = `{"models":[` +
 		`{"name":"fast","alias":"llama-3.2"},` +
 		`{"name":"reliable","fallback":["llama-3.2","gpt-4o-mini"]},` +
 		`{"name":"panel","discuss":["llama-3.2","gpt-4o-mini"]}]}`
 	sysContextConfig = `{"budget":4096}`
 )
+
+// echoCaller stands in for the provider transport in host-level conformance.
+// It is deterministic and names the resolved model and the context size, so
+// the transcript stays assertable (system spec: determinism) while the real
+// HTTP path is exercised by the entry's end-to-end test.
+type echoCaller struct{}
+
+func (echoCaller) Complete(model string, messages []modelmanager.ContextMessage) (string, error) {
+	last := ""
+	for _, m := range messages {
+		if m.Role == chathistory.RoleUser {
+			last = m.Text
+		}
+	}
+	return fmt.Sprintf("[%s] %s (context:%d)", model, last, len(messages)), nil
+}
 
 // hostComponent is a Go component built by the conformance fixture.
 type hostComponent struct {
@@ -641,7 +657,7 @@ func runHostSystem(in io.Reader, out io.Writer, nick string) error {
 				}
 				res, err := modelmanager.Apply(models, modelmanager.Op{
 					Kind: "respond", Model: "fast", Text: line, Context: contextMessages,
-				})
+				}, echoCaller{})
 				if err != nil {
 					return "", err
 				}

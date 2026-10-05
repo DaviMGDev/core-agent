@@ -36,6 +36,9 @@ func registerPluginSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the parsed list has (\d+) providers$`, stepParsedCount)
 	sc.Step(`^the first provider is "([^"]*)"$`, stepFirstProvider)
 	sc.Step(`^parsing fails$`, stepParsingFails)
+	sc.Step(`^a provider "([^"]*)" at "([^"]*)" serving "([^"]*)" is registered$`, stepRegisterProviderServing)
+	sc.Step(`^"([^"]*)" is served by "([^"]*)"$`, stepServedBy)
+	sc.Step(`^"([^"]*)" has no provider$`, stepNoProvider)
 
 	// model-manager
 	sc.Step(`^an empty model registry$`, stepEmptyModelRegistry)
@@ -50,6 +53,11 @@ func registerPluginSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a registry with view "([^"]*)" as discuss \[(.*)\]$`, stepRegistryWithDiscuss)
 	sc.Step(`^a view "([^"]*)" as fallback \[(.*)\]$`, stepViewFallback)
 	sc.Step(`^resolution fails with a cycle error$`, stepCycleError)
+	sc.Step(`^the model "([^"]*)" is asked to respond$`, stepAskToRespond)
+	sc.Step(`^the model caller fails for "([^"]*)"$`, stepCallerFailsFor)
+	sc.Step(`^no model caller is configured$`, stepNoCaller)
+	sc.Step(`^the answer comes from "([^"]*)"$`, stepAnswerFrom)
+	sc.Step(`^the response fails$`, stepResponseFails)
 
 	// chat-history
 	sc.Step(`^a conversation "([^"]*)"$`, stepConversation)
@@ -681,6 +689,106 @@ func stepTranscriptAnnounces(ctx context.Context, prefix string) error {
 	w := worldFrom(ctx)
 	if !strings.Contains(w.sys.out.String(), prefix) {
 		return fmt.Errorf("transcript does not announce %q:\n%s", prefix, w.sys.out.String())
+	}
+	return nil
+}
+
+// --- provider → model mapping ----------------------------------------------
+
+func stepRegisterProviderServing(ctx context.Context, name, endpoint, model string) error {
+	w := worldFrom(ctx)
+	if w.providers == nil {
+		w.providers = providermanager.NewRegistry()
+	}
+	w.err = w.providers.Register(providermanager.Provider{
+		Name:       name,
+		Endpoint:   endpoint,
+		Credential: "env:TEST_KEY",
+		Models:     []string{model},
+	})
+	return nil
+}
+
+func stepServedBy(ctx context.Context, model, name string) error {
+	w := worldFrom(ctx)
+	if w.err != nil {
+		return w.err
+	}
+	p, ok := w.providers.ProviderFor(model)
+	if !ok || p.Name != name {
+		return fmt.Errorf("ProviderFor(%q) = %+v, %v; want %q", model, p, ok, name)
+	}
+	return nil
+}
+
+func stepNoProvider(ctx context.Context, model string) error {
+	w := worldFrom(ctx)
+	if w.err != nil {
+		return w.err
+	}
+	if p, ok := w.providers.ProviderFor(model); ok {
+		return fmt.Errorf("ProviderFor(%q) = %+v, want no provider", model, p)
+	}
+	return nil
+}
+
+// --- model-manager response ------------------------------------------------
+
+// stubCaller stands in for the provider transport in library scenarios.
+type stubCaller struct{ failOn map[string]bool }
+
+func (c *stubCaller) Complete(model string, _ []modelmanager.ContextMessage) (string, error) {
+	if c.failOn[model] {
+		return "", fmt.Errorf("call %s failed", model)
+	}
+	return "answer from " + model, nil
+}
+
+func stepAskToRespond(ctx context.Context, model string) error {
+	w := worldFrom(ctx)
+	var caller modelmanager.Caller
+	if !w.noCaller {
+		if w.caller == nil {
+			w.caller = &stubCaller{}
+		}
+		caller = w.caller
+	}
+	w.answer, w.err = modelmanager.Apply(w.models, modelmanager.Op{Kind: "respond", Model: model}, caller)
+	return nil
+}
+
+func stepCallerFailsFor(ctx context.Context, model string) error {
+	w := worldFrom(ctx)
+	if w.caller == nil {
+		w.caller = &stubCaller{}
+	}
+	if w.caller.failOn == nil {
+		w.caller.failOn = map[string]bool{}
+	}
+	w.caller.failOn[model] = true
+	return nil
+}
+
+func stepNoCaller(ctx context.Context) error {
+	worldFrom(ctx).noCaller = true
+	return nil
+}
+
+func stepAnswerFrom(ctx context.Context, model string) error {
+	w := worldFrom(ctx)
+	if w.err != nil {
+		return fmt.Errorf("respond failed: %w", w.err)
+	}
+	if w.answer.Model != model {
+		return fmt.Errorf("answer model = %q, want %q", w.answer.Model, model)
+	}
+	return nil
+}
+
+func stepResponseFails(ctx context.Context) error {
+	w := worldFrom(ctx)
+	if w.err == nil {
+		return errors.New("respond succeeded, want failure")
 	}
 	return nil
 }

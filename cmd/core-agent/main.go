@@ -35,8 +35,8 @@ const (
 	DefaultNick = "agent"
 
 	providerConfig = `{"providers":[` +
-		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","credential":"env:CORE_AGENT_LOCAL_KEY"},` +
-		`{"name":"openai","endpoint":"https://api.openai.com/v1","credential":"env:OPENAI_API_KEY"}]}`
+		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","credential":"env:CORE_AGENT_LOCAL_KEY","models":["llama-3.2"]},` +
+		`{"name":"openai","endpoint":"https://api.openai.com/v1","credential":"env:OPENAI_API_KEY","models":["gpt-4o-mini"]}]}`
 
 	modelConfig = `{"models":[` +
 		`{"name":"fast","alias":"llama-3.2"},` +
@@ -47,6 +47,32 @@ const (
 	contextConfig       = `{"budget":4096}`
 )
 
+// sessionConfig is one composed session's configuration: the nickname and the
+// payloads handed to the five plugins. Tests override the provider document to
+// point at a local server, which is what turns the deterministic stub into a
+// real provider call.
+type sessionConfig struct {
+	nick      string
+	providers string
+	models    string
+	history   string
+	context   string
+}
+
+// defaultConfig returns the shipped configuration for a session named nick.
+func defaultConfig(nick string) sessionConfig {
+	if nick == "" {
+		nick = DefaultNick
+	}
+	return sessionConfig{
+		nick:      nick,
+		providers: providerConfig,
+		models:    modelConfig,
+		history:   historyConversation,
+		context:   contextConfig,
+	}
+}
+
 // plugin describes one starter plugin instance.
 type plugin struct {
 	ref     string
@@ -56,13 +82,13 @@ type plugin struct {
 }
 
 // starterPlugins returns the five plugins in dependency order, REPL last.
-func starterPlugins(nick string) []plugin {
+func starterPlugins(cfg sessionConfig) []plugin {
 	return []plugin{
-		{"provider-manager", providermanager.Wasm, providerConfig, false},
-		{"model-manager", modelmanager.Wasm, modelConfig, false},
-		{"chat-history", chathistory.Wasm, historyConversation, false},
-		{"context-manager", contextmanager.Wasm, contextConfig, false},
-		{"repl-chat", replchat.Wasm, nick, true},
+		{"provider-manager", providermanager.Wasm, cfg.providers, false},
+		{"model-manager", modelmanager.Wasm, cfg.models, false},
+		{"chat-history", chathistory.Wasm, cfg.history, false},
+		{"context-manager", contextmanager.Wasm, cfg.context, false},
+		{"repl-chat", replchat.Wasm, cfg.nick, true},
 	}
 }
 
@@ -78,11 +104,19 @@ func main() {
 // run composes the five plugins, hosts one REPL session on in/out, and
 // unloads everything before returning.
 func run(ctx context.Context, in io.Reader, out io.Writer, nick string) error {
-	if nick == "" {
-		nick = DefaultNick
+	return runConfig(ctx, in, out, defaultConfig(nick))
+}
+
+// runConfig composes the five plugins from cfg, hosts one REPL session on
+// in/out, and unloads everything before returning. Egress is open; credential
+// references in request headers are resolved from the host environment, so a
+// guest holds `env:NAME` and never a secret.
+func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConfig) error {
+	if cfg.nick == "" {
+		cfg.nick = DefaultNick
 	}
 
-	engine, err := wasm.NewEngine(ctx)
+	engine, err := wasm.NewEngine(ctx, wasm.WithHTTPCredentialResolver(os.LookupEnv))
 	if err != nil {
 		return fmt.Errorf("core-agent: engine: %w", err)
 	}
@@ -93,7 +127,7 @@ func run(ctx context.Context, in io.Reader, out io.Writer, nick string) error {
 	defer sched.Close()
 
 	fibers := make([]mcontext.FiberID, 0, 5)
-	for _, p := range starterPlugins(nick) {
+	for _, p := range starterPlugins(cfg) {
 		opts := []wasm.ComponentOption{
 			wasm.WithKeyRegistry(keys),
 			wasm.WithLogWriter(out),
