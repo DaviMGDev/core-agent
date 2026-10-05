@@ -55,36 +55,6 @@ type plugin struct {
 	stdio   bool
 }
 
-// bindingComponent adapts a wasm component so its declared provided keys
-// are bound during activation.
-//
-// The wasm guest ABI can declare a provide but cannot install a binding, and
-// the runtime advertises a provided key only when its fiber owns the binding
-// (runtime.registerProvides checks context.LookupOwner). Without this
-// adapter no injected key would ever be satisfied between guests. The
-// upstream fix — the wasm loader binding declared provides itself, or a bind
-// ABI — is proposed to memento (system spec D11); until it lands, the entry
-// binds on the guest's behalf through the public context API.
-type bindingComponent struct {
-	ref   string
-	inner runtime.Component
-}
-
-func (c bindingComponent) Declarations() runtime.Declarations { return c.inner.Declarations() }
-
-func (c bindingComponent) Activate(inst *runtime.Instance, payload any) error {
-	for _, k := range c.inner.Declarations().Provide {
-		typed, ok := k.(mcontext.Key[any])
-		if !ok {
-			return fmt.Errorf("core-agent: %s: provided key %q is not a Key[any]", c.ref, k.Name())
-		}
-		if err := typed.Bind(inst.Context(), c.ref); err != nil {
-			return fmt.Errorf("core-agent: %s: binding %q: %w", c.ref, k.Name(), err)
-		}
-	}
-	return c.inner.Activate(inst, payload)
-}
-
 // starterPlugins returns the five plugins in dependency order, REPL last.
 func starterPlugins(nick string) []plugin {
 	return []plugin{
@@ -136,7 +106,7 @@ func run(ctx context.Context, in io.Reader, out io.Writer, nick string) error {
 		if err != nil {
 			return fmt.Errorf("core-agent: %s: %w", p.ref, err)
 		}
-		id, err := sched.Insert(bindingComponent{ref: p.ref, inner: comp}, p.payload)
+		id, err := sched.Insert(comp, p.payload)
 		if err != nil {
 			return fmt.Errorf("core-agent: %s: %w", p.ref, err)
 		}
