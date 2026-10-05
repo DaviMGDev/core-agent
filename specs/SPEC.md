@@ -187,10 +187,13 @@ lines produce a new prompt only. Lines come from WASI stdin; output goes
 through the kernel log import; the session ends on `:quit` or EOF, and unload
 closes it.
 
-**First-cut response.** Until the transport ABI extension lands (D6, D8), a
-chat turn is answered by a deterministic local stub delivered by the repl-chat
-guest: the response names the turn and echoes the line. The session protocol is
-what is under test, not the model.
+**Turn pipeline.** A chat turn flows through the composed plugins over the
+loader's `invoke` ABI: the REPL appends the user turn to chat-history, reads
+recent turns, projects them into the context window, asks model-manager to
+respond (which resolves the model view to its first concrete model), and
+records the assistant reply. With no transport yet (D6), the response text is
+deterministic — `[<model>] <text> (context:<turns>)` — so the whole pipeline is
+visible in the transcript; only the provider call is missing.
 
 **Management semantics.** provider-manager stores `{name, endpoint,
 credential}` with validation and stable listing; model-manager resolves `alias`
@@ -198,6 +201,9 @@ views to one target, `fallback` chains to ordered targets, and `discuss` groups
 to ordered participants, refusing cycles; chat-history appends role-tagged
 messages and serves the most recent turns; context-manager projects a message
 list into a budgeted window (newest first, at least the newest message kept).
+Each management plugin serves its surface as ABI operations through its
+handler: chat-history `append`/`recent`, context-manager `project`,
+model-manager `resolve`/`respond`.
 
 **Configuration.** Each entry carries a payload: JSON config for the
 management plugins, a nickname string for repl-chat. The assembler provides
@@ -265,10 +271,11 @@ beyond `plugins/` and `cmd/` in the first cut.
   `plugins/` + `cmd/` only (a conformance entry needs a layout proposal) and no
   dependency is added before a spec needs it. A Godog runner over these
   features is the immediate follow-up.
-- **D8 — Cross-guest data flow deferred with the same proposal.** The current
-  ABI has no binding-read or inter-guest call surface; the first cut composes
-  lifecycle and local logic, and cross-plugin data flow is specified here but
-  exercised through library tests.
+- **D8 — Cross-guest data flow runs over invoke.** The loader's `invoke` ABI
+  is the call surface: the REPL pipeline reaches chat-history,
+  context-manager, and model-manager through their operation handlers, so the
+  first cut composes live data, not only lifecycle. Transport remains the only
+  deferred provider capability (D6).
 - **D9 — Committed artifacts.** Each plugin's `.wasm` is built from
   `plugins/<name>/guest` and committed beside the plugin; the host side embeds
   it, so tests and the entry need no rebuild step.

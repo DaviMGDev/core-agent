@@ -17,9 +17,9 @@ It is a wasm guest (WASI stdio) that provides the key `repl` and injects
 `chat-history`, `model-registry`, and `llm-context`, so the kernel activates it
 only once its dependencies are available.
 
-The first cut fixes the session protocol and the basic commands; responses are
-a deterministic local stub until the transport extension (system D6) lets the
-model plugins answer.
+The first cut fixes the session protocol and the basic commands; each chat
+turn runs the composed pipeline over `memento.invoke`, with the model's
+response deterministic until transport (system D6) lands.
 
 ## Protocol
 
@@ -28,16 +28,23 @@ model plugins answer.
 - `:help` returns one line naming the commands `:help` and `:quit`.
 - `:quit`, `:q`, and `:exit` end the session.
 - A blank line produces no response and the next prompt.
-- Any other line produces exactly one response line; the first-cut stub is
-  `turn <n>: <line>`, where `<n>` is the 1-based chat-turn counter.
+- Any other line is one chat turn: the guest runs the composed pipeline and
+  prints exactly one response line (the model-manager response, since
+  transport is deferred).
 - End of input ends the session cleanly.
 
 ## Semantics
 
-- `Session.Handle` is pure: it returns `Reply{Text, Quit}`; `Session.Run`
-  hosts the loop over any reader (join line, prompts, responses, stop on
-  quit or end of input), and the guest supplies WASI stdin plus the kernel
-  log as `emit`. Commands and blank lines do not increment the turn counter.
+- `Session.Handle` is pure: it returns `Reply{Text, Quit}` for commands and
+  delegates each chat turn to a responder `func(line string) (string, error)`;
+  `Session.Run` hosts the loop over any reader (join line, prompts, responses,
+  stop on quit or end of input) and reports responder errors in the transcript.
+  The guest supplies WASI stdin, the kernel log as `emit`, and the pipeline
+  responder. Commands and blank lines do not increment the turn counter.
+- A chat turn runs over `memento.invoke`: append the user turn to
+  `chat-history`, read recent turns, project them through `llm-context`, ask
+  `model-registry` to respond (it resolves the view to its first concrete
+  model), and append the assistant reply.
 - The session never loads or unloads plugins: composition belongs to the
   loader (charter open question 3; system D4).
 - The guest registers one effect on activation; its inverse emits
@@ -48,8 +55,8 @@ model plugins answer.
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
   `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
-  `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
-  `memento.register_effect`, `memento.log`.
+  `memento.bind`, `memento.invoke`, `memento.get_payload_len`,
+  `memento.get_payload`, `memento.register_effect`, `memento.log`.
 - Declares: injects `chat-history`, `model-registry`, `llm-context`; provides
   `repl`.
 - Binds: `repl` ← the session nickname (a tracked, revertible registration).
@@ -59,8 +66,8 @@ model plugins answer.
 ## Conformance
 
 Colocated Go tests cover the protocol (commands, aliases, blank lines, turn
-counting, stub shape). The `cmd/core-agent` end-to-end test scripts a session
-through the composed system. Scenarios:
+counting, responder delegation and errors). The `cmd/core-agent` end-to-end
+test scripts a session through the composed system. Scenarios:
 [`features/repl-chat.feature`](features/repl-chat.feature).
 
 ## Non-Goals
@@ -70,10 +77,11 @@ multiple sessions; a privileged LLM channel.
 
 ## Decisions
 
-- **RC1 — Stub first.** The first cut answers with a deterministic local stub;
-  transport-backed answers arrive with the ABI extension, not through a hidden
-  host path.
+- **RC1 — Pipeline first.** The first cut answers through the composed system
+  (history → context → model over `invoke`); with transport deferred the
+  model's response is deterministic, but the path is the real one.
 - **RC2 — No plugin control in the REPL.** The REPL exposes session commands
   only; the loader composes (charter open question 3; system D4).
 - **RC3 — Pure session logic.** The protocol lives in the host-testable
-  library; the guest only wires stdin/log and the kernel ABI.
+  library; the guest wires stdin/log, the kernel ABI, and the pipeline
+  responder.

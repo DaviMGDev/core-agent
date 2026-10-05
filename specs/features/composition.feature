@@ -16,6 +16,12 @@ Feature: Composition of the five starter plugins
       When the composition settles
       Then repl-chat activates after chat-history, model-manager, and context-manager
 
+    Scenario: A chat turn flows through the pipeline
+      Given the five starter plugins are active
+      When the user sends "hello"
+      Then chat-history records a user turn and an assistant turn
+      And the response names the resolved model and the context size
+
   Rule: Unloading is complete
 
     Scenario: Emptying the tree unloads everything

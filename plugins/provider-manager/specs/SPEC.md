@@ -53,7 +53,7 @@ declared limitation, not a silent one.
 ## ABI
 
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
-  `memory`.
+  `memory` (no operation handler: transport is deferred).
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
   `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
   `memento.register_effect`, `memento.log`.

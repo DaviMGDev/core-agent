@@ -25,7 +25,13 @@ Feature: repl-chat session protocol
       Given a session with nickname "agent"
       When the user enters "hello"
       Then the reply has exactly one line
-      And the reply echoes "hello"
+      And the reply is the responder's result
+
+    Scenario: A responder error is reported and the session continues
+      Given a session with nickname "agent"
+      When the responder fails for one turn
+      Then the transcript reports the error
+      And the session is still running
 
     Scenario: Only chat turns advance the counter
       Given a session with nickname "agent"

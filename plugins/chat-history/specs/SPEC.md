@@ -30,11 +30,13 @@ turns. Persistence is a non-goal until a spec asks for it.
   returns nothing, `n` beyond the length returns everything.
 - `Conversations` returns ids in creation order; the store is safe for
   concurrent use by the kernel's workers.
+- Operations: `append` (record a turn, return the conversation length) and
+  `recent` (serve the last n turns).
 
 ## ABI
 
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
-  `memory`.
+  `memento_alloc`, `memento_handle`, `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
   `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
   `memento.register_effect`, `memento.log`.

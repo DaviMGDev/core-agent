@@ -51,10 +51,15 @@ transcript and the last response is the turn's response; until transport
 lands, `Resolve` exposes exactly the ordered participant list the contract
 needs.
 
+- Operations: `resolve` (mode and flattened targets for a name) and `respond`
+  (resolve the requested model and answer with its first concrete model; the
+  response text is `[<model>] <text> (context:<n>)`, where `<n>` is the
+  supplied context size). Discussion orchestration still waits for transport.
+
 ## ABI
 
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
-  `memory`.
+  `memento_alloc`, `memento_handle`, `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
   `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
   `memento.register_effect`, `memento.log`.

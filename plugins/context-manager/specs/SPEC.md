@@ -33,15 +33,15 @@ so the kernel activates it after history is available.
 ## Projection
 
 The projection is a pure function: same history and budget, same window. It
-never talks to chat-history directly — the assembler feeds turns in, which is
-what keeps the plugin isolated and the projection testable on the host. Once
-cross-guest data flow lands (system D8), the guest will feed the projection
-from the `chat-history` binding.
+never talks to chat-history directly — the caller supplies the turns (the REPL
+reads them from `chat-history`), which is what keeps the plugin isolated and
+the projection testable on the host. The guest serves one operation,
+`project`, over the supplied turns.
 
 ## ABI
 
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
-  `memory`.
+  `memento_alloc`, `memento_handle`, `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
   `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
   `memento.register_effect`, `memento.log`.
