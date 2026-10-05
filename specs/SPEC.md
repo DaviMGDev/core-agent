@@ -211,17 +211,19 @@ defaults in `cmd/` and may override them with entries.
 
 ## Conformance
 
-The Gherkin scenarios in [`features/`](features/) are normative. The first cut
-executes behavior through Go tests colocated with each package, plus the
-end-to-end test in `cmd/core-agent` that scripts stdin through the composed
-system:
+The Gherkin scenarios in [`features/`](features/) and
+`plugins/*/specs/features/` are normative and run on Godog:
 
 ```console
 $ go test ./...
 ```
 
-Godog remains the assumed runner (memento convention); a conformance entry
-that runs these features on Godog is deferred until the first cut runs (D7).
+`conformance/` holds the runner and the step definitions. Plugin scenarios
+execute the host-testable libraries; system scenarios compose the five plugins
+at the host level with the same declarations, transcript, and pipeline (fast
+and deterministic). The wasm ABI path — the real guests, the loader,
+bind/get/invoke — is exercised end to end by `cmd/core-agent`'s scripted
+session test, and per-package Go tests cover each library beside its code.
 
 ## Non-Functional Requirements
 
@@ -240,7 +242,7 @@ Extras beyond the five starter plugins; local patches to memento (changes go
 upstream); network or binding-read guest capabilities before the upstream ABI
 extension; loading or unloading plugins from inside the REPL; persistence of
 history or credentials; cross-process or out-of-tree composition; any layout
-beyond `plugins/` and `cmd/` in the first cut.
+beyond `plugins/`, `cmd/`, and the `conformance/` runner in the first cut.
 
 ## Decisions
 
@@ -265,12 +267,11 @@ beyond `plugins/` and `cmd/` in the first cut.
   network calls; provider-manager specifies the required upstream extension
   (`memento.http_request`, proposed to memento) and implements management
   semantics only. No silent workaround.
-- **D7 — Conformance now, Godog next.** Gherkin is authored as the contract
-  now; executable conformance in the first cut is the colocated Go test suite
-  plus the `cmd/core-agent` end-to-end test, because the layout first cut is
-  `plugins/` + `cmd/` only (a conformance entry needs a layout proposal) and no
-  dependency is added before a spec needs it. A Godog runner over these
-  features is the immediate follow-up.
+- **D7 — Godog conformance.** Every feature file runs on Godog from
+  `conformance/` (the layout exception this plan proposed); plugin features
+  bind to the libraries, system features to the host-level composition, and
+  the wasm ABI path stays covered by the entry's end-to-end test and the
+  per-package suites.
 - **D8 — Cross-guest data flow runs over invoke.** The loader's `invoke` ABI
   is the call surface: the REPL pipeline reaches chat-history,
   context-manager, and model-manager through their operation handlers, so the
