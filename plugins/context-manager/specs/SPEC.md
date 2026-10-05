@@ -43,9 +43,11 @@ from the `chat-history` binding.
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
   `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
-  `memento.get_payload_len`, `memento.get_payload`, `memento.register_effect`,
-  `memento.log`.
+  `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
+  `memento.register_effect`, `memento.log`.
 - Declares: provides `llm-context`; injects `chat-history`.
+- Binds: `llm-context` ← the activation payload (the budget configuration
+  document), as a tracked, revertible registration.
 - Payload: JSON `{"budget":<runes>}`; the guest defaults to `4096`.
 - Effect inverse on unload: `context-manager: window released`.
 

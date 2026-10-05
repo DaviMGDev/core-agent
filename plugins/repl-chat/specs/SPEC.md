@@ -48,10 +48,11 @@ model plugins answer.
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
   `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
-  `memento.get_payload_len`, `memento.get_payload`, `memento.register_effect`,
-  `memento.log`.
+  `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
+  `memento.register_effect`, `memento.log`.
 - Declares: injects `chat-history`, `model-registry`, `llm-context`; provides
   `repl`.
+- Binds: `repl` ← the session nickname (a tracked, revertible registration).
 - Payload: the nickname string; the guest defaults to `agent` when empty.
 - Stdio: WASI stdin for lines; the log import for output.
 

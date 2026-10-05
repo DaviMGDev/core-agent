@@ -56,9 +56,11 @@ needs.
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
   `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
-  `memento.get_payload_len`, `memento.get_payload`, `memento.register_effect`,
-  `memento.log`.
+  `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
+  `memento.register_effect`, `memento.log`.
 - Declares: provides `model-registry`; injects `provider-registry`.
+- Binds: `model-registry` ← the activation payload (the view configuration
+  document), as a tracked, revertible registration.
 - Payload: JSON `{"models":[{"name","alias"|"fallback"|"discuss"}]}`.
 - Effect inverse on unload: `model-manager: model views released`.
 

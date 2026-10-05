@@ -24,6 +24,9 @@ func declareInject(ptr unsafe.Pointer, n uint32) int32
 //go:wasmimport memento declare_provide
 func declareProvide(ptr unsafe.Pointer, n uint32) int32
 
+//go:wasmimport memento bind
+func bindHost(keyPtr unsafe.Pointer, keyLen uint32, valPtr unsafe.Pointer, valLen uint32) int32
+
 //go:wasmimport memento get_payload_len
 func getPayloadLen() int32
 
@@ -59,6 +62,16 @@ func payload() []byte {
 	return buf[:got]
 }
 
+// bindProvided registers the provided key's value through the host ABI; a
+// declared provide must be bound during activation.
+func bindProvided(value []byte) bool {
+	kb := []byte(provideKey)
+	if len(value) == 0 {
+		return bindHost(unsafe.Pointer(&kb[0]), uint32(len(kb)), nil, 0) == 0
+	}
+	return bindHost(unsafe.Pointer(&kb[0]), uint32(len(kb)), unsafe.Pointer(&value[0]), uint32(len(value))) == 0
+}
+
 //go:wasmexport memento_declare
 func mementoDeclare() uint32 {
 	b := []byte(provideKey)
@@ -74,7 +87,11 @@ func mementoActivate() uint32 {
 		return 1
 	}
 
-	providers, err := providermanager.ParseConfig(payload())
+	p := payload()
+	if !bindProvided(p) {
+		return 2
+	}
+	providers, err := providermanager.ParseConfig(p)
 	if err != nil {
 		emit("provider-manager: " + err.Error() + "\n")
 		return 1

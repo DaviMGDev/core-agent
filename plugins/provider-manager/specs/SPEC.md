@@ -55,9 +55,11 @@ declared limitation, not a silent one.
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
   `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
-  `memento.get_payload_len`, `memento.get_payload`, `memento.register_effect`,
-  `memento.log`.
+  `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
+  `memento.register_effect`, `memento.log`.
 - Declares: provides `provider-registry`; injects nothing.
+- Binds: `provider-registry` ← the activation payload (the provider
+  configuration document), as a tracked, revertible registration.
 - Payload: JSON `{"providers":[{"name","endpoint","credential"}]}`.
 - Effect inverse on unload: `provider-manager: providers released`.
 

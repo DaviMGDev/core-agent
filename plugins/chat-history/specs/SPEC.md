@@ -36,9 +36,11 @@ turns. Persistence is a non-goal until a spec asks for it.
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
   `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
-  `memento.get_payload_len`, `memento.get_payload`, `memento.register_effect`,
-  `memento.log`.
+  `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
+  `memento.register_effect`, `memento.log`.
 - Declares: provides `chat-history`; injects nothing.
+- Binds: `chat-history` ← the conversation id, as a tracked, revertible
+  registration.
 - Payload: conversation id (string); the guest defaults to `default`.
 - Effect inverse on unload: `chat-history: conversation closed`.
 
