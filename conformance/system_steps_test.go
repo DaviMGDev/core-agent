@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/DaviMGDev/core-agent/plugins/agent"
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	contextmanager "github.com/DaviMGDev/core-agent/plugins/context-manager"
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
@@ -121,14 +123,14 @@ func (s *systemSession) stop() {
 // --- system steps -----------------------------------------------------------
 
 func registerSystemSteps(sc *godog.ScenarioContext) {
-	sc.Step(`^the five starter plugins composed as fibers$`, stepComposeSystem)
-	sc.Step(`^the system is composed with the five plugins and nickname "([^"]*)"$`, stepComposeSystemNick)
-	sc.Step(`^the system is composed with the five plugins$`, stepComposeDefault)
+	sc.Step(`^the six starter plugins composed as fibers$`, stepComposeSystem)
+	sc.Step(`^the system is composed with the six plugins and nickname "([^"]*)"$`, stepComposeSystemNick)
+	sc.Step(`^the system is composed with the six plugins$`, stepComposeDefault)
 	sc.Step(`^the composition settles$`, stepCompositionSettles)
 	sc.Step(`^every plugin declares its keys and activates$`, stepCompositionSettles)
-	sc.Step(`^the transcript reports all five plugins$`, stepCompositionSettles)
-	sc.Step(`^repl-chat activates after chat-history, model-manager, and context-manager$`, stepActivationOrder)
-	sc.Step(`^the five (?:starter )?plugins are active$`, stepFiveActive)
+	sc.Step(`^the transcript reports all six plugins$`, stepCompositionSettles)
+	sc.Step(`^repl-chat activates after chat-history, model-manager, context-manager, and the agent$`, stepActivationOrder)
+	sc.Step(`^the six (?:starter )?plugins are active$`, stepSixActive)
 	sc.Step(`^the session starts$`, stepSessionStarts)
 	sc.Step(`^the transcript announces "([^"]*)"$`, stepTranscriptContains)
 	sc.Step(`^the transcript shows the prompt "([^"]*)"$`, stepTranscriptContains)
@@ -181,6 +183,7 @@ func stepCompositionSettles(ctx context.Context) error {
 		"model-manager: 3 model view(s) ready",
 		`chat-history: conversation "main" open`,
 		"context-manager: window ready",
+		"agent: loop ready",
 		"repl: agent joined",
 	} {
 		if err := w.sys.waitContains(marker, 30*time.Second); err != nil {
@@ -199,14 +202,15 @@ func stepActivationOrder(ctx context.Context) error {
 	history := strings.Index(out, "chat-history:")
 	model := strings.Index(out, "model-manager:")
 	contextIdx := strings.Index(out, "context-manager:")
+	agentIdx := strings.Index(out, "agent: loop ready")
 	repl := strings.Index(out, "repl: agent joined")
-	if repl < history || repl < model || repl < contextIdx {
+	if repl < history || repl < model || repl < contextIdx || repl < agentIdx {
 		return fmt.Errorf("repl-chat activated before its dependencies:\n%s", out)
 	}
 	return nil
 }
 
-func stepFiveActive(ctx context.Context) error {
+func stepSixActive(ctx context.Context) error {
 	w := worldFrom(ctx)
 	if w.sys == nil {
 		if err := stepComposeSystemNick(ctx, "agent"); err != nil {
@@ -490,7 +494,7 @@ func (c *hostComponent) Activate(inst *rt.Instance, _ any) error {
 	return c.activate(inst)
 }
 
-// runHostSystem composes the five plugins at the host level over one shared
+// runHostSystem composes the six plugins at the host level over one shared
 // key registry and hosts one session: the same declarations, transcript, and
 // pipeline as cmd/core-agent, with the wasm ABI path exercised separately by
 // that entry's end-to-end test.
@@ -505,7 +509,8 @@ func runHostSystem(in io.Reader, out io.Writer, nick string) error {
 
 	key := func(name string) spc.Key[any] { return spc.NewKey[any](name) }
 	providerKey, modelKey := key("provider-registry"), key("model-registry")
-	historyKey, contextKey, replKey := key("chat-history"), key("llm-context"), key("repl")
+	historyKey, contextKey := key("chat-history"), key("llm-context")
+	agentKey, replKey := key("agent-loop"), key("repl")
 
 	providers := providermanager.NewRegistry()
 	models := modelmanager.NewRegistry()
@@ -612,10 +617,35 @@ func runHostSystem(in io.Reader, out io.Writer, nick string) error {
 		return err
 	}
 
+	agentCfg := agent.Config{
+		Conversation: "main",
+		Model:        "fast",
+		Budget:       budget,
+		Tools: []agent.Tool{
+			{Name: "read", Description: "read a file"},
+			{Name: "write", Description: "write a file"},
+		},
+	}
+	if err := add(&hostComponent{
+		decls: rt.Declarations{
+			Provide: []spc.AnyKey{agentKey},
+			Inject:  []spc.AnyKey{historyKey, modelKey, contextKey},
+		},
+		activate: func(inst *rt.Instance) error {
+			if err := bind(inst, agentKey, agentCfg.Conversation); err != nil {
+				return err
+			}
+			emit("agent: loop ready\n")
+			return effectLog(inst, "agent: loop closed\n")
+		},
+	}); err != nil {
+		return err
+	}
+
 	if err := add(&hostComponent{
 		decls: rt.Declarations{
 			Provide: []spc.AnyKey{replKey},
-			Inject:  []spc.AnyKey{historyKey, modelKey, contextKey},
+			Inject:  []spc.AnyKey{agentKey},
 		},
 		activate: func(inst *rt.Instance) error {
 			session := replchat.New(nick)
@@ -626,26 +656,50 @@ func runHostSystem(in io.Reader, out io.Writer, nick string) error {
 				return err
 			}
 			return session.Run(in, emit, func(line string) (string, error) {
-				if _, err := store.Append("main", chathistory.RoleUser, line); err != nil {
-					return "", err
-				}
-				recent := store.Recent("main", 10)
-				window := make([]contextmanager.Message, 0, len(recent))
-				for _, m := range recent {
-					window = append(window, contextmanager.Message{Role: m.Role, Text: m.Text})
-				}
-				projected := contextmanager.Project(window, budget)
-				contextMessages := make([]modelmanager.ContextMessage, 0, len(projected.Messages))
-				for _, m := range projected.Messages {
-					contextMessages = append(contextMessages, modelmanager.ContextMessage{Role: m.Role, Text: m.Text})
-				}
-				res, err := modelmanager.Apply(models, modelmanager.Op{
-					Kind: "respond", Model: "fast", Text: line, Context: contextMessages,
-				}, modelmanager.MockCaller{})
+				res, err := agent.RunTurn(agentCfg, line, agent.Deps{
+					Append: func(role, text string) error {
+						_, err := store.Append("main", role, text)
+						return err
+					},
+					Recent: func(n int) ([]agent.Message, error) {
+						recent := store.Recent("main", n)
+						out := make([]agent.Message, 0, len(recent))
+						for _, m := range recent {
+							out = append(out, agent.Message{Role: m.Role, Text: m.Text})
+						}
+						return out, nil
+					},
+					Project: func(msgs []agent.Message) ([]agent.Message, error) {
+						window := make([]contextmanager.Message, 0, len(msgs))
+						for _, m := range msgs {
+							window = append(window, contextmanager.Message{Role: m.Role, Text: m.Text})
+						}
+						projected := contextmanager.Project(window, budget)
+						out := make([]agent.Message, 0, len(projected.Messages))
+						for _, m := range projected.Messages {
+							out = append(out, agent.Message{Role: m.Role, Text: m.Text})
+						}
+						return out, nil
+					},
+					Respond: func(text string, context []agent.Message, tools []agent.Tool) (agent.Answer, error) {
+						contextMessages := make([]modelmanager.ContextMessage, 0, len(context))
+						for _, m := range context {
+							contextMessages = append(contextMessages, modelmanager.ContextMessage{Role: m.Role, Text: m.Text})
+						}
+						res, err := modelmanager.Apply(models, modelmanager.Op{
+							Kind: "respond", Model: agentCfg.Model, Text: text, Context: contextMessages,
+						}, modelmanager.MockCaller{})
+						if err != nil {
+							return agent.Answer{}, err
+						}
+						return agent.ParseAnswer(res.Text), nil
+					},
+					StartJob: func(tool string, args json.RawMessage) (string, error) {
+						return "", errors.New("the host fixture composes no tool manager")
+					},
+					Publish: func(text string) error { return nil },
+				})
 				if err != nil {
-					return "", err
-				}
-				if _, err := store.Append("main", chathistory.RoleAssistant, res.Text); err != nil {
 					return "", err
 				}
 				return res.Text, nil

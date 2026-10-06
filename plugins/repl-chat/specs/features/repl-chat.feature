@@ -45,7 +45,7 @@ Feature: repl-chat session protocol
   Rule: Session lifecycle
 
     Scenario: The guest announces and closes the session
-      Given the system is composed with the five plugins
+      Given the system is composed with the six plugins
       When the session ends
       Then the transcript announces "repl:" at the start
       And the transcript reports "repl: session closed" on unload
