@@ -17,9 +17,11 @@ import (
 	"os"
 	"time"
 
+	"github.com/DaviMGDev/core-agent/plugins/agent"
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	contextmanager "github.com/DaviMGDev/core-agent/plugins/context-manager"
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
+	"github.com/DaviMGDev/core-agent/plugins/notifications"
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
 	replchat "github.com/DaviMGDev/core-agent/plugins/repl-chat"
 	mcontext "github.com/DaviMGDev/memento/context"
@@ -50,10 +52,11 @@ const (
 
 	historyConversation = "main"
 	contextConfig       = `{"budget":4096}`
+	agentConfig         = `{"conversation":"main","model":"fast"}`
 )
 
 // sessionConfig is one composed session's configuration: the nickname and the
-// payloads handed to the five plugins. Tests override the provider document to
+// payloads handed to the six plugins. Tests override the provider document to
 // point at a local server, which is what turns the deterministic stub into a
 // real provider call.
 type sessionConfig struct {
@@ -62,6 +65,7 @@ type sessionConfig struct {
 	models    string
 	history   string
 	context   string
+	agent     string
 }
 
 // defaultConfig returns the shipped configuration for a session named nick.
@@ -75,8 +79,35 @@ func defaultConfig(nick string) sessionConfig {
 		models:    modelConfig,
 		history:   historyConversation,
 		context:   contextConfig,
+		agent:     agentConfig,
 	}
 }
+
+// busServices adapts the notification bus to the loader's host-services
+// contract. Job imports decline until the tool manager is wired into the
+// entry; guest publishes reach the bus like any other publisher.
+type busServices struct {
+	bus *notifications.Bus
+}
+
+func (busServices) StartJob(*runtime.Instance, []byte) ([]byte, error) {
+	return nil, errors.New("no tool manager configured")
+}
+
+func (busServices) PeepJob(*runtime.Instance, []byte) ([]byte, error) {
+	return nil, errors.New("no tool manager configured")
+}
+
+func (busServices) KillJob(*runtime.Instance, []byte) ([]byte, error) {
+	return nil, errors.New("no tool manager configured")
+}
+
+func (s busServices) Publish(topic string, payload []byte) error {
+	s.bus.Publish(topic, payload)
+	return nil
+}
+
+func (busServices) Cancelled(*runtime.Instance) bool { return false }
 
 // plugin describes one starter plugin instance.
 type plugin struct {
@@ -86,13 +117,14 @@ type plugin struct {
 	stdio   bool
 }
 
-// starterPlugins returns the five plugins in dependency order, REPL last.
+// starterPlugins returns the six plugins in dependency order, REPL last.
 func starterPlugins(cfg sessionConfig) []plugin {
 	return []plugin{
 		{"provider-manager", providermanager.Wasm, cfg.providers, false},
 		{"model-manager", modelmanager.Wasm, cfg.models, false},
 		{"chat-history", chathistory.Wasm, cfg.history, false},
 		{"context-manager", contextmanager.Wasm, cfg.context, false},
+		{"agent", agent.Wasm, cfg.agent, false},
 		{"repl-chat", replchat.Wasm, cfg.nick, true},
 	}
 }
@@ -112,7 +144,7 @@ func main() {
 	}
 }
 
-// runConfig composes the five plugins from cfg, hosts one REPL session on
+// runConfig composes the six plugins from cfg, hosts one REPL session on
 // in/out, and unloads everything before returning. Egress is open; credential
 // references in request headers are resolved from the host environment, so a
 // guest holds `env:NAME` and never a secret.
@@ -121,7 +153,11 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 		cfg.nick = DefaultNick
 	}
 
-	engine, err := wasm.NewEngine(ctx, wasm.WithHTTPCredentialResolver(os.LookupEnv))
+	bus := notifications.New()
+	engine, err := wasm.NewEngine(ctx,
+		wasm.WithHTTPCredentialResolver(os.LookupEnv),
+		wasm.WithHostServices(busServices{bus: bus}),
+	)
 	if err != nil {
 		return fmt.Errorf("core-agent: engine: %w", err)
 	}
@@ -131,7 +167,7 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	sched := runtime.New()
 	defer sched.Close()
 
-	fibers := make([]mcontext.FiberID, 0, 5)
+	fibers := make([]mcontext.FiberID, 0, 6)
 	for _, p := range starterPlugins(cfg) {
 		opts := []wasm.ComponentOption{
 			wasm.WithKeyRegistry(keys),
