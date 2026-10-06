@@ -17,6 +17,7 @@ import (
 	"github.com/DaviMGDev/core-agent/plugins/notifications"
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
 	replchat "github.com/DaviMGDev/core-agent/plugins/repl-chat"
+	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 	spc "github.com/DaviMGDev/memento/context"
 	rt "github.com/DaviMGDev/memento/runtime"
 )
@@ -40,6 +41,7 @@ func TestFeatures(t *testing.T) {
 				"../plugins/chat-history/specs/features/chat-history.feature",
 				"../plugins/context-manager/specs/features/context-manager.feature",
 				"../plugins/notifications/specs/features/notifications.feature",
+				"../plugins/tool-manager/specs/features/tool-manager.feature",
 			},
 			TestingT: t,
 		},
@@ -60,6 +62,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	})
 	registerPluginSteps(sc)
 	registerNotificationsSteps(sc)
+	registerToolManagerSteps(sc)
 	registerSystemSteps(sc)
 }
 
@@ -127,6 +130,14 @@ type world struct {
 	subWakers   map[string]*testWaker
 	publishDone bool
 
+	// tool-manager
+	tmRegistry *toolmanager.Registry
+	tmManager  *toolmanager.Manager
+	tmRecorder *tmRecorder
+	tmJob      *toolmanager.Job
+	tmRelease  chan struct{}
+	tmDeclErr  error
+
 	// shared
 	err error
 
@@ -156,6 +167,16 @@ func (w *world) close() {
 	}
 	for _, tw := range w.subWakers {
 		tw.releaseAll()
+	}
+	if w.tmRelease != nil {
+		select {
+		case <-w.tmRelease:
+		default:
+			close(w.tmRelease)
+		}
+	}
+	if w.tmManager != nil {
+		w.tmManager.Close()
 	}
 }
 
