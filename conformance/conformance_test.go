@@ -11,6 +11,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/DaviMGDev/core-agent/plugins/agent"
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	contextmanager "github.com/DaviMGDev/core-agent/plugins/context-manager"
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
@@ -42,6 +43,7 @@ func TestFeatures(t *testing.T) {
 				"../plugins/context-manager/specs/features/context-manager.feature",
 				"../plugins/notifications/specs/features/notifications.feature",
 				"../plugins/tool-manager/specs/features/tool-manager.feature",
+				"../plugins/agent/specs/features/agent.feature",
 			},
 			TestingT: t,
 		},
@@ -63,6 +65,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerPluginSteps(sc)
 	registerNotificationsSteps(sc)
 	registerToolManagerSteps(sc)
+	registerAgentSteps(sc)
 	registerSystemSteps(sc)
 }
 
@@ -129,6 +132,11 @@ type world struct {
 	waker       *testWaker
 	subWakers   map[string]*testWaker
 	publishDone bool
+
+	// agent
+	agentCfg agent.Config
+	agentRes agent.TurnResult
+	agentRec *agentRecorder
 
 	// tool-manager
 	tmRegistry *toolmanager.Registry
