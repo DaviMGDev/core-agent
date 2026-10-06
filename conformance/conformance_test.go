@@ -14,6 +14,7 @@ import (
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	contextmanager "github.com/DaviMGDev/core-agent/plugins/context-manager"
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
+	"github.com/DaviMGDev/core-agent/plugins/notifications"
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
 	replchat "github.com/DaviMGDev/core-agent/plugins/repl-chat"
 	spc "github.com/DaviMGDev/memento/context"
@@ -38,6 +39,7 @@ func TestFeatures(t *testing.T) {
 				"../plugins/model-manager/specs/features/model-manager.feature",
 				"../plugins/chat-history/specs/features/chat-history.feature",
 				"../plugins/context-manager/specs/features/context-manager.feature",
+				"../plugins/notifications/specs/features/notifications.feature",
 			},
 			TestingT: t,
 		},
@@ -57,6 +59,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 		return ctx, nil
 	})
 	registerPluginSteps(sc)
+	registerNotificationsSteps(sc)
 	registerSystemSteps(sc)
 }
 
@@ -117,6 +120,13 @@ type world struct {
 	lastLine    string
 	transcripts int
 
+	// notifications
+	bus         *notifications.Bus
+	sub         *notifications.Subscription
+	waker       *testWaker
+	subWakers   map[string]*testWaker
+	publishDone bool
+
 	// shared
 	err error
 
@@ -140,6 +150,12 @@ func (w *world) close() {
 	}
 	if w.sched != nil {
 		w.sched.Close()
+	}
+	if w.waker != nil {
+		w.waker.releaseAll()
+	}
+	for _, tw := range w.subWakers {
+		tw.releaseAll()
 	}
 }
 

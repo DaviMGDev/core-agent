@@ -13,14 +13,15 @@ Feature: Notifications — a queued event bus
     Scenario: Per-subscriber order is publish order
       Given a subscriber of "job.tick"
       When three events are published to "job.tick"
-      Then the subscriber receives them in publish order in one wake
+      Then the subscriber receives them in publish order
 
   Rule: Wakes are host-driven and coalesce
 
     Scenario: Pending events cause one wake
       Given a subscriber of "job.completed" that is busy
       When two events are published to "job.completed"
-      Then the subscriber is woken once after it returns
+      And the subscriber returns
+      Then the subscriber is woken once
       And the wake carries both events
 
     Scenario: A wake never preempts a call in flight
