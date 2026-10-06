@@ -24,8 +24,10 @@ D11-D13), and `cmd/core-agent` injects it into the memento engine.
 - `Publish(topic, payload)` queues the event for every subscriber of the
   topic and returns to the publisher without blocking; a publisher never
   waits on a subscriber.
-- `Subscribe(topic, waker)` appends a subscriber; subscription is
-  host-configured (system D14).
+- `Subscribe(topic, waker)` appends a subscriber and returns its
+  subscription; subscription is host-configured (system D14).
+- A waker blocks until the subscriber can receive, then drains the queue with
+  `Take`; the drain is what makes a wake.
 - Delivery order per subscriber is publish order.
 - A subscriber is woken by the host, never preempted: at most one wake is in
   flight per subscriber, and a wake that arrives while the subscriber is
@@ -35,11 +37,13 @@ D11-D13), and `cmd/core-agent` injects it into the memento engine.
 
 ## Delivery
 
-The bus owns a queue per subscription. Publishing marks a subscriber
-scheduled and a delivery goroutine calls its `Wake(events)`; the waker (the
-host) serializes the wake with the subscriber's own calls — the module lock
-does the waiting, so no wake preempts a call in flight. Events published
-during a wake are delivered in a later wake.
+The bus owns a queue per subscription. Publishing appends and marks the
+subscriber scheduled; a delivery goroutine calls `Wake(sub)`, which blocks
+until the subscriber can receive — its module lock is the waiting room — and
+then drains with `sub.Take()`. Because the drain happens when the lock is
+free, every event queued while the subscriber was busy lands in that one
+wake, and no wake preempts a call in flight. Events published after the
+drain are delivered in a later wake.
 
 ## Topics
 

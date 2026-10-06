@@ -22,31 +22,55 @@ type Event struct {
 	Payload []byte
 }
 
-// Waker is a subscriber the bus wakes with the events queued for it. The
-// host implements it around a guest's handler: the wake blocks on the
-// subscriber's module lock, so a wake waits for a call in flight instead of
-// preempting it. Wake must not be called concurrently for one subscriber.
+// Waker is a subscriber the bus wakes. Wake is called at most once per
+// subscription at a time. The host implements it around a guest's handler:
+// Wake blocks until the subscriber can receive (its module lock), then drains
+// the queued events with sub.Take — so events that arrive while the
+// subscriber is busy join the same wake instead of causing another, and a
+// wake never preempts a call in flight.
 type Waker interface {
-	Wake(events []Event)
+	Wake(sub *Subscription)
+}
+
+// Subscription is one subscriber's queue. Take drains it; the host calls it
+// from Wake once the subscriber can receive.
+type Subscription struct {
+	bus       *Bus
+	waker     Waker
+	queue     []Event
+	scheduled bool
+}
+
+// Take returns the events queued for the subscription and empties the queue.
+// It is called by the waker inside Wake, under the subscriber's own lock.
+func (s *Subscription) Take() []Event {
+	s.bus.mu.Lock()
+	defer s.bus.mu.Unlock()
+	events := s.queue
+	s.queue = nil
+	return events
 }
 
 // Bus is a queued publish/subscribe bus. It is safe for concurrent use.
 type Bus struct {
 	mu   sync.Mutex
-	subs map[string][]*subscriber
+	subs map[string][]*Subscription
 }
 
 // New returns an empty bus.
 func New() *Bus {
-	return &Bus{subs: make(map[string][]*subscriber)}
+	return &Bus{subs: make(map[string][]*Subscription)}
 }
 
-// Subscribe appends a waker to a topic. Subscription is host-configured:
-// the assembler decides which component hears which topic (system D14).
-func (b *Bus) Subscribe(topic string, waker Waker) {
+// Subscribe appends a waker to a topic and returns its subscription.
+// Subscription is host-configured: the assembler decides which component
+// hears which topic (system D14).
+func (b *Bus) Subscribe(topic string, waker Waker) *Subscription {
+	s := &Subscription{bus: b, waker: waker}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.subs[topic] = append(b.subs[topic], &subscriber{waker: waker})
+	b.subs[topic] = append(b.subs[topic], s)
+	return s
 }
 
 // Publish queues the event for every subscriber of the topic and returns to
@@ -54,7 +78,7 @@ func (b *Bus) Subscribe(topic string, waker Waker) {
 // order is publish order.
 func (b *Bus) Publish(topic string, payload []byte) {
 	b.mu.Lock()
-	var scheduled []*subscriber
+	var scheduled []*Subscription
 	for _, s := range b.subs[topic] {
 		s.queue = append(s.queue, Event{Topic: topic, Payload: append([]byte(nil), payload...)})
 		if !s.scheduled {
@@ -68,27 +92,17 @@ func (b *Bus) Publish(topic string, payload []byte) {
 	}
 }
 
-// deliver drains a subscriber's queue in one wake, repeating while events
-// keep arriving; at most one delivery goroutine runs per subscriber.
-func (b *Bus) deliver(s *subscriber) {
+// deliver wakes a subscriber, repeating while events keep arriving; at most
+// one delivery goroutine runs per subscription.
+func (b *Bus) deliver(s *Subscription) {
 	for {
+		s.waker.Wake(s)
 		b.mu.Lock()
-		events := s.queue
-		s.queue = nil
-		if len(events) == 0 {
+		if len(s.queue) == 0 {
 			s.scheduled = false
 			b.mu.Unlock()
 			return
 		}
 		b.mu.Unlock()
-		s.waker.Wake(events)
 	}
-}
-
-// subscriber is one subscription: its waker, its queued events, and whether
-// a delivery is in flight.
-type subscriber struct {
-	waker     Waker
-	queue     []Event
-	scheduled bool
 }
