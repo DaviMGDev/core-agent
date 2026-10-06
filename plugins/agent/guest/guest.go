@@ -300,8 +300,22 @@ func mementoActivate() uint32 {
 	return 0
 }
 
+// arena keeps handler buffers alive for the duration of one exchange.
+var arena [][]byte
+
+//go:wasmexport memento_alloc
+func mementoAlloc(size uint32) uint32 {
+	if size == 0 {
+		return 0
+	}
+	b := make([]byte, size)
+	arena = append(arena, b)
+	return uint32(uintptr(unsafe.Pointer(&b[0])))
+}
+
 //go:wasmexport memento_handle
 func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
+	defer func() { arena = arena[:0] }()
 	var wake wakeRequest
 	if err := json.Unmarshal(byteSlice(reqPtr, reqLen), &wake); err != nil {
 		return 0
