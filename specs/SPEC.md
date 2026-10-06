@@ -23,9 +23,10 @@ following spatiotemporal composability — the paradigm memento implements
 The kernel is memento, imported as-is; every other capability is a plugin,
 loaded dynamically as a `.wasm` guest through memento's loader on wazero.
 
-The first cut is deliberately small: five starter plugins, nothing fancy, no
-extras until these run. The LLM reaches the system through the REPL, like any
-other user.
+The first cut is deliberately small: five starter plugins, and the agent
+layer adds the agent that owns the turn loop on top of them (the terminal
+invokes it; the tool manager and the notification bus are host-side, D14).
+The LLM reaches the system through the REPL, like any other user.
 
 Composition is the point. Plugins declare the context keys they inject and
 provide; memento activates a plugin only when its keys are satisfied,
@@ -53,16 +54,16 @@ reconcile a loader tree with payloads.
 
 ## User Stories
 
-**US-001 — The system composes the five starter plugins**
+**US-001 — The system composes the six plugins**
 
 As a system assembler,
-I want to declare the five plugins as loader entries,
+I want to declare the six plugins as loader entries,
 so that the kernel activates them in dependency order and unloads them
 completely.
 
 Acceptance criteria (EARS):
 
-- WHEN the five entries are reconciled THE system SHALL activate each plugin
+- WHEN the six entries are reconciled THE system SHALL activate each plugin
   once its declared keys are satisfied. (Event-driven)
 - WHEN the tree is emptied THE system SHALL unload each plugin and run its
   effect inverse. (Event-driven)
@@ -158,9 +159,10 @@ memento keys:
 | model-manager | `provider-registry` | `model-registry` |
 | chat-history | — | `chat-history` |
 | context-manager | `chat-history` | `llm-context` |
-| repl-chat | `chat-history`, `model-registry`, `llm-context` | `repl` |
+| agent | `chat-history`, `model-registry`, `llm-context` | `agent-loop` |
+| repl-chat | `agent-loop` | `repl` |
 
-**Entry.** `cmd/core-agent` registers the five compiled guests, composes them
+**Entry.** `cmd/core-agent` registers the six compiled guests, composes them
 through the scheduler (`Insert` / `Inspect` / `Remove`), hosts the REPL
 session, and unloads on exit. The scheduler path is deliberate: the REPL's
 activation hosts the interactive session, which outlives the loader's
@@ -239,7 +241,7 @@ $ go test ./...
 ```
 
 `conformance/` holds the runner and the step definitions. Plugin scenarios
-execute the host-testable libraries; system scenarios compose the five plugins
+execute the host-testable libraries; system scenarios compose the six plugins
 at the host level with the same declarations, transcript, and pipeline (fast
 and deterministic). The wasm ABI path — the real guests, the loader,
 bind/get/invoke — is exercised end to end by `cmd/core-agent`'s scripted
@@ -258,7 +260,7 @@ session test, and per-package Go tests cover each library beside its code.
 
 ## Non-Goals
 
-Extras beyond the five starter plugins; local patches to memento (changes go
+Extras beyond the six plugins; local patches to memento (changes go
 upstream); loading or unloading plugins from inside the REPL; discussion merge
 orchestration; persistence of history or credentials; cross-process or
 out-of-tree composition; any layout beyond `plugins/`, `cmd/`, and the
@@ -279,7 +281,7 @@ out-of-tree composition; any layout beyond `plugins/`, `cmd/`, and the
   REPL does not load or unload plugins in the first cut: composition is the
   loader's job, exercised from `cmd/`; repl-chat's spec records this decision.
   (Charter open question 3.)
-- **D5 — Shared key registry.** All five components register against one
+- **D5 — Shared key registry.** All six components register against one
   `wasm.KeyRegistry`, so injection satisfaction and provider identity work
   across plugins; each guest binds its provided values through the ABI, so the
   registration is the guest's own tracked effect.
@@ -295,9 +297,10 @@ out-of-tree composition; any layout beyond `plugins/`, `cmd/`, and the
   the wasm ABI path stays covered by the entry's end-to-end test and the
   per-package suites.
 - **D8 — Cross-guest data flow runs over invoke.** The loader's `invoke` ABI
-  is the call surface: the REPL pipeline reaches chat-history,
-  context-manager, and model-manager through their operation handlers, so the
-  first cut composes live data, not only lifecycle.
+  is the call surface: the agent's turn pipeline reaches chat-history,
+  context-manager, and model-manager through their operation handlers, and
+  the terminal reaches the agent the same way, so the system composes live
+  data, not only lifecycle.
 - **D9 — Committed artifacts.** Each plugin's `.wasm` is built from
   `plugins/<name>/guest` and committed beside the plugin; the host side embeds
   it, so tests and the entry need no rebuild step.
