@@ -5,7 +5,7 @@ description: "An agent core on memento: the kernel imported as-is, every other c
 tags: [spec]
 sections: [context, users, user-stories, architecture, semantics, conformance, nfr, non-goals, decisions]
 created: "2026-10-05"
-updated: "2026-10-05"
+updated: "2026-10-06"
 ---
 
 # core-agent — System Specification
@@ -130,16 +130,24 @@ contract. The guest is built with
 `GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared` and committed beside the
 plugin; the host side embeds it.
 
+Host-side plugins follow the same shape — library and `specs/` under
+`plugins/<name>/` — but are not compiled to wasm: they run in the host process
+and `cmd/core-agent` injects them into the memento engine. The tool manager
+and the notification bus are host-side; guests reach them only through the
+ABI imports.
+
 **Host ABI (kernel surface).** Guests export `memento_declare`,
 `memento_activate`, `memento_revert_effect`, and `memory`, and may export
 `memento_alloc`/`memento_handle` to serve invocations; they import
 `memento.declare_inject`, `memento.declare_provide`, `memento.bind`,
 `memento.get_len`, `memento.get`, `memento.invoke`, `memento.get_payload_len`,
 `memento.get_payload`, `memento.http_request`, `memento.http_response_len`,
-`memento.http_response`, `memento.register_effect`, and `memento.log`. Strings
-cross as (pointer, length) pairs into guest memory; the ABI's isolated
-contract lives in memento's `plugins/wasm/specs/`. WASI stdio is wired for the
-REPL guest.
+`memento.http_response`, `memento.job_start`, `memento.job_peep`,
+`memento.job_kill`, `memento.job_result_len`, `memento.job_result`,
+`memento.publish`, `memento.cancel_poll`, `memento.register_effect`, and
+`memento.log`. Strings cross as (pointer, length) pairs into guest memory; the
+ABI's isolated contract lives in memento's `plugins/wasm/specs/`. WASI stdio
+is wired for the REPL guest.
 
 **Composition (starter keys).** One shared key registry maps guest key names to
 memento keys:
@@ -309,3 +317,10 @@ host-side anymore.
   server and no network. Host-level conformance composes that same mock
   caller, so the deterministic transcript and the mockable system are one
   mechanism.
+- **D14 — Host-side plugins live beside guest plugins.** The tool manager and
+  the notification bus are Go packages under `plugins/<name>/` with their own
+  specs, injected into the memento engine (`WithHostServices`) from
+  `cmd/core-agent`; they own OS resources and concurrency a serialized guest
+  cannot. Guests reach them only through the ABI imports, never around.
+  Subscriptions are host-configured — the assembler decides which component
+  hears which topic — and waking a guest subscriber invokes its handler.
