@@ -55,7 +55,9 @@ the assembler wired them.
 - A wake may carry `{"config": {...}}` — the turn's configuration, used for
   that wake only: a subagent's own conversation, model, budget, and tool
   surface. It may carry `{"dump": true}`, and the answer then includes
-  `{"conversation": [...]}`, the turns the wake ran on.
+  `{"conversation": [...]}`, the turns the wake ran on. `{"private": true}`
+  marks a subagent turn: its speech stays in the child's conversation and is
+  not published for a renderer.
 - Payload: the agent's JSON configuration (conversation, model, budget,
   tools, hidden, renamed).
 - Effect inverse on unload: `agent: loop closed`.

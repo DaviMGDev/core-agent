@@ -30,7 +30,9 @@ the manager.
   done | failed like any other. No fast path.
 - The child's conversation and context are its own. It receives the brief and
   nothing else of the parent's; the conversation id is derived from the job,
-  so two calls never share a context.
+  so two calls never share a context. Its turns are private: the child's
+  speech stays in its conversation and is not published for a renderer; only
+  the parent's turn surfaces the result.
 - The child's model is configuration, resolved by model-manager like any
   agent; a per-call `model` overrides the tool's default.
 - The runner drives the child's turns: it invokes the agent loop with the

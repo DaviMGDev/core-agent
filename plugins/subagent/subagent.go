@@ -78,21 +78,6 @@ type Result struct {
 	Conversation []agent.Message `json:"conversation,omitempty"`
 }
 
-// wakeRequest is the agent's request document; the field names are the agent
-// guest's protocol.
-type wakeRequest struct {
-	Line   string        `json:"line,omitempty"`
-	Events []wakeEvent   `json:"events,omitempty"`
-	Config *agent.Config `json:"config,omitempty"`
-	Dump   bool          `json:"dump,omitempty"`
-}
-
-// wakeEvent is one bus event in a wake.
-type wakeEvent struct {
-	Topic   string          `json:"topic"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-}
-
 // wakeResponse is the agent's answer.
 type wakeResponse struct {
 	Text         string          `json:"text,omitempty"`
@@ -139,7 +124,7 @@ func run(ctx context.Context, loop Agent, jobs Jobs, opts Options, args json.Raw
 	events := jobs.Listen(job)
 	defer jobs.Unlisten(job)
 
-	req := wakeRequest{Line: call.Brief, Config: &cfg, Dump: wantConversation}
+	req := agent.Wake{Line: call.Brief, Config: &cfg, Dump: wantConversation, Private: true}
 	for {
 		resp, err := turn(ctx, loop, jobs, job, req)
 		if err != nil {
@@ -159,10 +144,11 @@ func run(ctx context.Context, loop Agent, jobs Jobs, opts Options, args json.Raw
 			}
 			return nil, errors.New("subagent: no listener")
 		}
-		req = wakeRequest{
-			Events: []wakeEvent{{Topic: ev.Topic, Payload: json.RawMessage(ev.Payload)}},
-			Config: &cfg,
-			Dump:   wantConversation,
+		req = agent.Wake{
+			Events:  []agent.Event{{Topic: ev.Topic, Payload: json.RawMessage(ev.Payload)}},
+			Config:  &cfg,
+			Dump:    wantConversation,
+			Private: true,
 		}
 	}
 }
@@ -170,7 +156,7 @@ func run(ctx context.Context, loop Agent, jobs Jobs, opts Options, args json.Raw
 // turn invokes one child turn, attributing the job to the caller's instance
 // for the duration of the call: cancellation and child adoption answer for
 // the turn in flight, and nothing else.
-func turn(ctx context.Context, loop Agent, jobs Jobs, job *toolmanager.Job, req wakeRequest) (wakeResponse, error) {
+func turn(ctx context.Context, loop Agent, jobs Jobs, job *toolmanager.Job, req agent.Wake) (wakeResponse, error) {
 	b, err := json.Marshal(req)
 	if err != nil {
 		return wakeResponse{}, fmt.Errorf("subagent: %w", err)

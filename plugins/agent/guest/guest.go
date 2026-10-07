@@ -129,22 +129,6 @@ type answerResult struct {
 	Text string `json:"text"`
 }
 
-// wakeRequest is one wake: a user line from the terminal, or the events a bus
-// wake carries. Config overrides the activation configuration for this wake
-// only — a subagent's own conversation, model, and budget — and Dump asks the
-// answer to carry the conversation so a caller can collect it.
-type wakeRequest struct {
-	Line   string        `json:"line,omitempty"`
-	Events []event       `json:"events,omitempty"`
-	Config *agent.Config `json:"config,omitempty"`
-	Dump   bool          `json:"dump,omitempty"`
-}
-
-type event struct {
-	Topic   string          `json:"topic"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-}
-
 // wakeResponse is the handler's answer: the message it spoke, the job it
 // started, and — when asked — the conversation the turn ran on.
 type wakeResponse struct {
@@ -174,8 +158,9 @@ func invokeJSON(key string, req any) ([]byte, error) {
 }
 
 // deps builds the turn's operations over the composed system: the pipeline
-// over invoke, jobs over the job imports, messages over publish.
-func deps(cfg agent.Config) agent.Deps {
+// over invoke, jobs over the job imports, messages over publish. A private
+// turn — a subagent's — keeps its speech in the child's conversation.
+func deps(cfg agent.Config, publish bool) agent.Deps {
 	return agent.Deps{
 		Append: func(role, text string) error {
 			_, err := invokeJSON(historyKey, turn{Op: "append", Conversation: cfg.Conversation, Role: role, Text: text})
@@ -244,6 +229,9 @@ func deps(cfg agent.Config) agent.Deps {
 			return handle.Job, nil
 		},
 		Publish: func(text string) error {
+			if !publish {
+				return nil
+			}
 			topic := []byte("chat.message")
 			payload, err := json.Marshal(map[string]string{"text": text})
 			if err != nil {
@@ -275,7 +263,7 @@ func dumpConversation(conversation string) ([]agent.Message, error) {
 }
 
 // describeEvents flattens a bus wake into the line the model sees.
-func describeEvents(events []event) string {
+func describeEvents(events []agent.Event) string {
 	line := ""
 	for _, e := range events {
 		if line != "" {
@@ -338,7 +326,7 @@ func mementoAlloc(size uint32) uint32 {
 //go:wasmexport memento_handle
 func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 	defer func() { arena = arena[:0] }()
-	var wake wakeRequest
+	var wake agent.Wake
 	if err := json.Unmarshal(byteSlice(reqPtr, reqLen), &wake); err != nil {
 		return 0
 	}
@@ -353,7 +341,7 @@ func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 	if line == "" {
 		return 0
 	}
-	result, err := agent.RunTurn(cfg, line, deps(cfg))
+	result, err := agent.RunTurn(cfg, line, deps(cfg, !wake.Private))
 	if err != nil {
 		emit("agent: " + err.Error() + "\n")
 		return 0

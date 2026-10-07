@@ -15,12 +15,12 @@ import (
 // and answers from a script.
 type fakeLoop struct {
 	mu     sync.Mutex
-	wakes  []wakeRequest
-	answer func(w wakeRequest) (text string, job string, conversation []agent.Message)
+	wakes  []agent.Wake
+	answer func(w agent.Wake) (text string, job string, conversation []agent.Message)
 }
 
 func (f *fakeLoop) Handle(_ context.Context, req []byte) ([]byte, error) {
-	var w wakeRequest
+	var w agent.Wake
 	if err := json.Unmarshal(req, &w); err != nil {
 		return nil, err
 	}
@@ -43,10 +43,10 @@ func (f *fakeLoop) Handle(_ context.Context, req []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-func (f *fakeLoop) snapshot() []wakeRequest {
+func (f *fakeLoop) snapshot() []agent.Wake {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]wakeRequest(nil), f.wakes...)
+	return append([]agent.Wake(nil), f.wakes...)
 }
 
 // newManager returns a manager with the subagent tool declared over loop.
@@ -82,7 +82,7 @@ func TestBriefIsRequired(t *testing.T) {
 }
 
 func TestCallRunsOnItsOwnConversation(t *testing.T) {
-	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []agent.Message) {
+	loop := &fakeLoop{answer: func(w agent.Wake) (string, string, []agent.Message) {
 		return "child: " + w.Line, "", nil
 	}}
 	m, err := newManager(loop, Options{})
@@ -113,7 +113,7 @@ func TestCallRunsOnItsOwnConversation(t *testing.T) {
 }
 
 func TestCallReturnsTheChildsReply(t *testing.T) {
-	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []agent.Message) {
+	loop := &fakeLoop{answer: func(w agent.Wake) (string, string, []agent.Message) {
 		return "child: " + w.Line, "", nil
 	}}
 	m, err := newManager(loop, Options{})
@@ -138,7 +138,7 @@ func TestCallReturnsTheChildsReply(t *testing.T) {
 }
 
 func TestChildConfigCarriesTheModel(t *testing.T) {
-	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []agent.Message) {
+	loop := &fakeLoop{answer: func(w agent.Wake) (string, string, []agent.Message) {
 		return "child: " + w.Line, "", nil
 	}}
 	m, err := newManager(loop, Options{Model: "reliable"})
@@ -164,7 +164,7 @@ func TestChildConfigCarriesTheModel(t *testing.T) {
 }
 
 func TestCallReturnsTheConversationWhenAsked(t *testing.T) {
-	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []agent.Message) {
+	loop := &fakeLoop{answer: func(w agent.Wake) (string, string, []agent.Message) {
 		if !w.Dump {
 			return "child: " + w.Line, "", nil
 		}

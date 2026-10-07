@@ -53,6 +53,26 @@ type Message struct {
 	Text string `json:"text"`
 }
 
+// Wake is one host call into the agent: a user line, or the events a bus wake
+// carries. Config overrides the activation configuration for this wake only —
+// a subagent's own conversation, model, and budget — and Dump asks the answer
+// to carry the conversation the wake ran on. Private marks a subagent turn:
+// its speech stays in the child's conversation and is not published for a
+// renderer.
+type Wake struct {
+	Line    string  `json:"line,omitempty"`
+	Events  []Event `json:"events,omitempty"`
+	Config  *Config `json:"config,omitempty"`
+	Dump    bool    `json:"dump,omitempty"`
+	Private bool    `json:"private,omitempty"`
+}
+
+// Event is one bus event in a wake.
+type Event struct {
+	Topic   string          `json:"topic"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
 // Answer is the model's reply: speak, call a tool, or stay silent. A model
 // answer whose text parses as a JSON directive carries the tool call; any
 // other text is speech.
