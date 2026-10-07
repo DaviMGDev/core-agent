@@ -25,6 +25,8 @@ import (
 	"github.com/DaviMGDev/core-agent/plugins/notifications"
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
 	replchat "github.com/DaviMGDev/core-agent/plugins/repl-chat"
+	"github.com/DaviMGDev/core-agent/plugins/subagent"
+	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 	mcontext "github.com/DaviMGDev/memento/context"
 	"github.com/DaviMGDev/memento/plugins/wasm"
 	"github.com/DaviMGDev/memento/runtime"
@@ -59,14 +61,17 @@ const (
 // sessionConfig is one composed session's configuration: the nickname and the
 // payloads handed to the six plugins. Tests override the provider document to
 // point at a local server, which is what turns the deterministic stub into a
-// real provider call.
+// real provider call. onComposed, when set, receives the tool manager once
+// the six plugins are active: the entry's tests drive the host side (peep,
+// kill) while the session runs.
 type sessionConfig struct {
-	nick      string
-	providers string
-	models    string
-	history   string
-	context   string
-	agent     string
+	nick       string
+	providers  string
+	models     string
+	history    string
+	context    string
+	agent      string
+	onComposed func(*toolmanager.Manager)
 }
 
 // defaultConfig returns the shipped configuration for a session named nick.
@@ -85,22 +90,23 @@ func defaultConfig(nick string) sessionConfig {
 }
 
 // busServices adapts the notification bus to the loader's host-services
-// contract. Job imports decline until the tool manager is wired into the
-// entry; guest publishes reach the bus like any other publisher.
+// contract: guest job imports reach the manager and guest publishes reach the
+// bus like any other publisher.
 type busServices struct {
-	bus *notifications.Bus
+	bus     *notifications.Bus
+	manager *toolmanager.Manager
 }
 
-func (busServices) StartJob(*runtime.Instance, []byte) ([]byte, error) {
-	return nil, errors.New("no tool manager configured")
+func (s busServices) StartJob(caller *runtime.Instance, req []byte) ([]byte, error) {
+	return s.manager.StartJob(caller, req)
 }
 
-func (busServices) PeepJob(*runtime.Instance, []byte) ([]byte, error) {
-	return nil, errors.New("no tool manager configured")
+func (s busServices) PeepJob(caller *runtime.Instance, req []byte) ([]byte, error) {
+	return s.manager.PeepJob(caller, req)
 }
 
-func (busServices) KillJob(*runtime.Instance, []byte) ([]byte, error) {
-	return nil, errors.New("no tool manager configured")
+func (s busServices) KillJob(caller *runtime.Instance, req []byte) ([]byte, error) {
+	return s.manager.KillJob(caller, req)
 }
 
 func (s busServices) Publish(topic string, payload []byte) error {
@@ -108,7 +114,9 @@ func (s busServices) Publish(topic string, payload []byte) error {
 	return nil
 }
 
-func (busServices) Cancelled(*runtime.Instance) bool { return false }
+func (s busServices) Cancelled(caller *runtime.Instance) bool {
+	return s.manager.Cancelled(caller)
+}
 
 // plugin describes one starter plugin instance.
 type plugin struct {
@@ -154,9 +162,10 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	}
 
 	bus := notifications.New()
+	manager := toolmanager.New(toolmanager.Options{Publisher: bus})
 	engine, err := wasm.NewEngine(ctx,
 		wasm.WithHTTPCredentialResolver(os.LookupEnv),
-		wasm.WithHostServices(busServices{bus: bus}),
+		wasm.WithHostServices(busServices{bus: bus, manager: manager}),
 	)
 	if err != nil {
 		return fmt.Errorf("core-agent: engine: %w", err)
@@ -191,6 +200,21 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 		return err
 	}
 
+	// The agent is the loop every caller reaches: the terminal invokes it, and
+	// the host waker wakes it for its root jobs' events. The manager lists the
+	// subagent tool over it, so a delegation is a job whose runner drives the
+	// child's turns.
+	agentComp := comps[len(comps)-2]
+	if err := manager.Registry().Declare(subagent.Tool(agentComp, manager, subagent.Options{})); err != nil {
+		return fmt.Errorf("core-agent: subagent tool: %w", err)
+	}
+	for _, topic := range jobWakeTopics {
+		bus.Subscribe(topic, agentWaker{ctx: ctx, comp: agentComp, log: out})
+	}
+	if cfg.onComposed != nil {
+		cfg.onComposed(manager)
+	}
+
 	// The terminal guest is woken for every chat.message — a prompted reply
 	// and an unprompted message take the same path — while the host drives
 	// the session loop; the guest's module lock is free between wakes.
@@ -215,12 +239,50 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	}
 	sub.WaitIdle()
 
+	// Reclaim the jobs before unloading the guests they call into.
+	manager.Close()
+
 	for i := len(fibers) - 1; i >= 0; i-- {
 		if err := sched.Remove(fibers[i]); err != nil {
 			return fmt.Errorf("core-agent: unload fiber %d: %w", fibers[i], err)
 		}
 	}
 	return waitGone(sched, fibers)
+}
+
+// jobWakeTopics are the job events that wake the top-level agent. A start is
+// not among them: the turn that started the job just ended.
+var jobWakeTopics = []string{
+	notifications.TopicJobTick,
+	notifications.TopicJobCompleted,
+	notifications.TopicJobFailed,
+	notifications.TopicJobKilled,
+}
+
+// agentWaker wakes the top-level agent with one batch of its root jobs'
+// events; the LLM decides whether to speak.
+type agentWaker struct {
+	ctx  context.Context
+	comp *wasm.WASMComponent
+	log  io.Writer
+}
+
+func (w agentWaker) Wake(sub *notifications.Subscription) {
+	busEvents := sub.Take()
+	wake := agent.Wake{Events: make([]agent.Event, 0, len(busEvents))}
+	for _, e := range busEvents {
+		wake.Events = append(wake.Events, agent.Event{Topic: e.Topic, Payload: json.RawMessage(e.Payload)})
+	}
+	if len(wake.Events) == 0 {
+		return
+	}
+	req, err := json.Marshal(wake)
+	if err != nil {
+		return
+	}
+	if _, err := w.comp.Handle(w.ctx, req); err != nil {
+		fmt.Fprintf(w.log, "agent: wake: %v\n", err)
+	}
 }
 
 // invokeTerminal sends one wake to the terminal guest and reads its answer.
