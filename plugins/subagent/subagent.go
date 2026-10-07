@@ -41,7 +41,7 @@ type Jobs interface {
 	Listen(job *toolmanager.Job) <-chan toolmanager.Event
 	Unlisten(job *toolmanager.Job)
 	Attribute(caller *runtime.Instance, job *toolmanager.Job)
-	Release(caller *runtime.Instance)
+	Release(caller *runtime.Instance, job *toolmanager.Job)
 }
 
 // Options configure the subagent tool.
@@ -177,7 +177,7 @@ func turn(ctx context.Context, loop Agent, jobs Jobs, job *toolmanager.Job, req 
 	}
 	if caller := job.Caller(); caller != nil {
 		jobs.Attribute(caller, job)
-		defer jobs.Release(caller)
+		defer jobs.Release(caller, job)
 	}
 	resp, err := loop.Handle(ctx, b)
 	if err != nil {

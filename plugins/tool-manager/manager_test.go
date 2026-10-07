@@ -204,7 +204,7 @@ func TestStartJobAdoptsUnderTheAttributedParent(t *testing.T) {
 
 	parent := m.Start("slow", nil, 0)
 	m.Attribute(inst, parent)
-	defer m.Release(inst)
+	defer m.Release(inst, parent)
 
 	raw, err := m.StartJob(inst, []byte(`{"tool":"slow"}`))
 	if err != nil {
@@ -230,6 +230,38 @@ func TestStartJobAdoptsUnderTheAttributedParent(t *testing.T) {
 	m.Kill(parent)
 	if st := child.Wait(); st.State != StateKilled {
 		t.Fatalf("child after parent kill = %s, want killed", st.State)
+	}
+}
+
+func TestAttributionsStackForNestedTurns(t *testing.T) {
+	m := New(Options{})
+	release := make(chan struct{})
+	defer close(release)
+	if err := m.Registry().Declare(Tool{Name: "slow", Run: blocking(release)}); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	inst := captureInstance(t)
+
+	outer := m.Start("slow", nil, 0)
+	m.Attribute(inst, outer)
+	inner := m.Start("slow", nil, 0)
+	m.Attribute(inst, inner)
+
+	// The inner turn owns the instance; releasing the outer turn leaves it.
+	m.Release(inst, outer)
+	if got := m.attributed(inst); got != inner {
+		t.Fatalf("attributed job = %v, want the inner turn", got)
+	}
+	if m.Cancelled(inst) {
+		t.Fatal("attributed inner job is not killed; Cancelled must be false")
+	}
+	m.Kill(inner)
+	if !m.Cancelled(inst) {
+		t.Fatal("killed inner job: Cancelled = false, want true")
+	}
+	m.Release(inst, inner)
+	if got := m.attributed(inst); got != nil {
+		t.Fatalf("attributed job after both releases = %v, want none", got)
 	}
 }
 

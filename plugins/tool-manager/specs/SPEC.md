@@ -84,6 +84,8 @@ cross-process tools.
 - **TM6 — The tree is the routing table.** Adoption happens at start, before
   the runner runs, so a child's first event already routes to its parent; no
   filter over a global topic can leak a subtree to another agent.
-- **TM7 — Attribution is per call.** `Attribute`/`Release` name the job an
-  instance is executing for; the caller's cancellation poll answers for it,
-  and jobs it starts are adopted under it.
+- **TM7 — Attribution is per call and stacks.** `Attribute`/`Release` name
+  the job an instance is executing for; attributions stack, because one guest
+  instance can run nested turns (a subagent's child calls back into the same
+  loop), and the innermost job is the one in flight. The caller's
+  cancellation poll answers for it, and jobs it starts are adopted under it.

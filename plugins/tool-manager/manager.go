@@ -59,7 +59,7 @@ type Manager struct {
 	seq         uint64
 	defaultTick time.Duration
 	publisher   Publisher
-	callers     map[*runtime.Instance]*Job
+	callers     map[*runtime.Instance][]*Job
 	listeners   map[*Job]*jobListener
 	closed      bool
 	wg          sync.WaitGroup
@@ -76,7 +76,7 @@ func New(opts Options) *Manager {
 		jobs:        make(map[string]*Job),
 		defaultTick: tick,
 		publisher:   opts.Publisher,
-		callers:     make(map[*runtime.Instance]*Job),
+		callers:     make(map[*runtime.Instance][]*Job),
 		listeners:   make(map[*Job]*jobListener),
 	}
 }
@@ -235,19 +235,41 @@ func (m *Manager) Job(id string) (*Job, bool) {
 }
 
 // Attribute records that a job is executing on a caller instance, so the
-// caller's cancellation poll and host imports answer for it. The wiring that
-// runs a guest tool attributes it here.
+// caller's cancellation poll and host imports answer for it. Attributions
+// stack: one guest instance can run nested turns, and the innermost job is
+// the one in flight.
 func (m *Manager) Attribute(caller *runtime.Instance, job *Job) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.callers[caller] = job
+	m.callers[caller] = append(m.callers[caller], job)
 }
 
-// Release drops a caller's job attribution.
-func (m *Manager) Release(caller *runtime.Instance) {
+// Release drops one caller's job attribution, leaving any nested ones in
+// place.
+func (m *Manager) Release(caller *runtime.Instance, job *Job) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.callers, caller)
+	stack := m.callers[caller]
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == job {
+			stack = append(stack[:i], stack[i+1:]...)
+			break
+		}
+	}
+	if len(stack) == 0 {
+		delete(m.callers, caller)
+		return
+	}
+	m.callers[caller] = stack
+}
+
+// attributed returns the job currently executing on the caller's instance.
+func (m *Manager) attributed(caller *runtime.Instance) *Job {
+	stack := m.callers[caller]
+	if len(stack) == 0 {
+		return nil
+	}
+	return stack[len(stack)-1]
 }
 
 // Close reclaims every job: runners are cancelled and their jobs land failed
@@ -366,7 +388,7 @@ func (m *Manager) StartJob(caller *runtime.Instance, req []byte) ([]byte, error)
 		return nil, errors.New("job start: tool is required")
 	}
 	m.mu.Lock()
-	parent := m.callers[caller]
+	parent := m.attributed(caller)
 	m.mu.Unlock()
 	job := m.start(r.Tool, r.Args, time.Duration(r.TickMS)*time.Millisecond, caller, parent)
 	return json.Marshal(jobRef{Job: job.ID()})
@@ -404,9 +426,9 @@ func (m *Manager) Publish(topic string, payload []byte) error {
 // for the calling job only.
 func (m *Manager) Cancelled(caller *runtime.Instance) bool {
 	m.mu.Lock()
-	job, ok := m.callers[caller]
+	job := m.attributed(caller)
 	m.mu.Unlock()
-	if !ok {
+	if job == nil {
 		return false
 	}
 	return job.State() == StateKilled
