@@ -48,3 +48,20 @@ Feature: Subagent — an agent callable as a tool
       When a subagent is started with the brief "summarize" asking for the conversation
       Then the subagent job reaches done with reply "child: summarize"
       And the result carries the child's conversation
+
+  Rule: The child's model is configuration
+
+    Scenario: The child runs on the configured default model
+      Given a manager with a subagent tool configured with model "reliable"
+      When a subagent is started with the brief "summarize"
+      Then the child's wake names the model "reliable"
+
+    Scenario: A per-call model overrides the default
+      Given a manager with a subagent tool configured with model "reliable"
+      When a subagent is started with the brief "summarize" on model "fast"
+      Then the child's wake names the model "fast"
+
+    Scenario: The child's model view is resolved like any agent
+      Given a manager with a subagent tool resolving models
+      When a subagent is started with the brief "summarize" on model "reliable"
+      Then the subagent job reaches done with reply "mock(llama-3.2): summarize (context:1)"

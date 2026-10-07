@@ -137,6 +137,32 @@ func TestCallReturnsTheChildsReply(t *testing.T) {
 	}
 }
 
+func TestChildConfigCarriesTheModel(t *testing.T) {
+	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []agent.Message) {
+		return "child: " + w.Line, "", nil
+	}}
+	m, err := newManager(loop, Options{Model: "reliable"})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if st := m.Start(ToolName, json.RawMessage(`{"brief":"default"}`), 0).Wait(); st.State != toolmanager.StateDone {
+		t.Fatalf("default call = %s (%s), want done", st.State, st.Error)
+	}
+	if st := m.Start(ToolName, json.RawMessage(`{"brief":"override","model":"fast"}`), 0).Wait(); st.State != toolmanager.StateDone {
+		t.Fatalf("override call = %s (%s), want done", st.State, st.Error)
+	}
+	wakes := loop.snapshot()
+	if len(wakes) != 2 {
+		t.Fatalf("wakes = %d, want 2", len(wakes))
+	}
+	if wakes[0].Config == nil || wakes[0].Config.Model != "reliable" {
+		t.Fatalf("default call model = %+v, want reliable", wakes[0].Config)
+	}
+	if wakes[1].Config == nil || wakes[1].Config.Model != "fast" {
+		t.Fatalf("override call model = %+v, want fast", wakes[1].Config)
+	}
+}
+
 func TestCallReturnsTheConversationWhenAsked(t *testing.T) {
 	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []agent.Message) {
 		if !w.Dump {

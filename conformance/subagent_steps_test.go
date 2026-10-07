@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/cucumber/godog"
 
 	"github.com/DaviMGDev/core-agent/plugins/agent"
+	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
 	"github.com/DaviMGDev/core-agent/plugins/subagent"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 )
@@ -93,28 +95,32 @@ func registerSubagentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a subagent is started with the brief "([^"]*)" asking for the conversation$`, stepStartSubagentConversation)
 	sc.Step(`^the result carries no conversation$`, stepResultNoConversation)
 	sc.Step(`^the result carries the child's conversation$`, stepResultConversation)
+	sc.Step(`^a manager with a subagent tool configured with model "([^"]*)"$`, stepManagerSubagentModel)
+	sc.Step(`^a manager with a subagent tool resolving models$`, stepManagerSubagentResolving)
+	sc.Step(`^a subagent is started with the brief "([^"]*)" on model "([^"]*)"$`, stepStartSubagentModel)
+	sc.Step(`^the child's wake names the model "([^"]*)"$`, stepChildWakeModel)
 }
 
 // newSubagentWorld wires a manager with the subagent tool over the fake agent.
-func newSubagentWorld(w *world) {
+func newSubagentWorld(w *world, opts subagent.Options) {
 	w.subAgent = &fakeSubAgent{answer: func(w subWake) (string, string) {
 		return "child: " + w.Line, ""
 	}}
 	w.tmRecorder = &tmRecorder{}
 	w.subManager = toolmanager.New(toolmanager.Options{Publisher: w.tmRecorder})
-	if err := w.subManager.Registry().Declare(subagent.Tool(w.subAgent, w.subManager, subagent.Options{})); err != nil {
+	if err := w.subManager.Registry().Declare(subagent.Tool(w.subAgent, w.subManager, opts)); err != nil {
 		w.err = err
 	}
 }
 
 func stepManagerSubagentTool(ctx context.Context) error {
-	newSubagentWorld(worldFrom(ctx))
+	newSubagentWorld(worldFrom(ctx), subagent.Options{})
 	return worldFrom(ctx).err
 }
 
 func stepManagerBlockingSubagentTool(ctx context.Context) error {
 	w := worldFrom(ctx)
-	newSubagentWorld(w)
+	newSubagentWorld(w, subagent.Options{})
 	if w.err != nil {
 		return w.err
 	}
@@ -185,6 +191,67 @@ func waitSubWakes(w *world, n int) ([]subWake, error) {
 		time.Sleep(time.Millisecond)
 	}
 	return nil, fmt.Errorf("child saw %d wakes, want %d", len(w.subAgent.snapshot()), n)
+}
+
+func stepManagerSubagentModel(ctx context.Context, model string) error {
+	w := worldFrom(ctx)
+	newSubagentWorld(w, subagent.Options{Model: model})
+	return w.err
+}
+
+func stepManagerSubagentResolving(ctx context.Context) error {
+	w := worldFrom(ctx)
+	newSubagentWorld(w, subagent.Options{})
+	if w.err != nil {
+		return w.err
+	}
+	views, err := modelmanager.ParseConfig([]byte(sysModelConfig))
+	if err != nil {
+		return err
+	}
+	reg := modelmanager.NewRegistry()
+	for _, v := range views {
+		if err := reg.Register(v); err != nil {
+			return err
+		}
+	}
+	w.subAgent.answer = func(wk subWake) (string, string) {
+		res, err := modelmanager.Apply(reg, modelmanager.Op{
+			Kind: "respond", Model: wk.Config.Model,
+			Context: []modelmanager.ContextMessage{{Role: "user", Text: wk.Line}},
+		}, modelmanager.MockCaller{})
+		if err != nil {
+			return "model error: " + err.Error(), ""
+		}
+		return res.Text, ""
+	}
+	return nil
+}
+
+func stepStartSubagentModel(ctx context.Context, brief, model string) error {
+	w := worldFrom(ctx)
+	args, err := json.Marshal(map[string]string{"brief": brief, "model": model})
+	if err != nil {
+		return err
+	}
+	w.subJob = w.subManager.Start(subagent.ToolName, args, 0)
+	return nil
+}
+
+func stepChildWakeModel(ctx context.Context, model string) error {
+	w := worldFrom(ctx)
+	wakes, err := waitSubWakes(w, 1)
+	if err != nil {
+		return err
+	}
+	cfg := wakes[0].Config
+	if cfg == nil {
+		return errors.New("child's wake carries no config")
+	}
+	if cfg.Model != model {
+		return fmt.Errorf("child's model = %q, want %q", cfg.Model, model)
+	}
+	return nil
 }
 
 func stepStartSubagentConversation(ctx context.Context, brief string) error {
