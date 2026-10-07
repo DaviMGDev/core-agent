@@ -400,6 +400,9 @@ func (m *Manager) PeepJob(caller *runtime.Instance, req []byte) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
+	if err := m.visibleTo(caller, job); err != nil {
+		return nil, err
+	}
 	return json.Marshal(statusFrom(job.Peep()))
 }
 
@@ -409,7 +412,23 @@ func (m *Manager) KillJob(caller *runtime.Instance, req []byte) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
+	if err := m.visibleTo(caller, job); err != nil {
+		return nil, err
+	}
 	return json.Marshal(statusFrom(m.Kill(job)))
+}
+
+// visibleTo enforces subtree-only visibility: a caller attributed to a job
+// sees and controls that job's subtree; an unattributed caller — the
+// top-level agent — sees its whole tree.
+func (m *Manager) visibleTo(caller *runtime.Instance, job *Job) error {
+	m.mu.Lock()
+	root := m.attributed(caller)
+	m.mu.Unlock()
+	if root == nil || job.descendantOf(root) {
+		return nil
+	}
+	return fmt.Errorf("job %q is outside the caller's subtree", job.ID())
 }
 
 // Publish implements the loader's publish import: guest publishes reach the

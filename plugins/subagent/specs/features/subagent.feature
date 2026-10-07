@@ -72,3 +72,11 @@ Feature: Subagent — an agent callable as a tool
       Given a manager with a recursing subagent tool
       When the subagent chain is started
       Then the innermost job fails with a depth reason
+
+  Rule: The parent is the sole listener
+
+    Scenario: A child's events reach the parent, not the bus
+      Given a manager with a parent job and a child job
+      When the child job completes
+      Then the parent's listener receives the child's events
+      And the bus saw only the root job's start

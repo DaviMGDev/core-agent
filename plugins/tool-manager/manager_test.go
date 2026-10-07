@@ -265,6 +265,44 @@ func TestAttributionsStackForNestedTurns(t *testing.T) {
 	}
 }
 
+func TestGuestPeepAndKillAreSubtreeOnly(t *testing.T) {
+	m := New(Options{})
+	release := make(chan struct{})
+	defer close(release)
+	if err := m.Registry().Declare(Tool{Name: "slow", Run: blocking(release)}); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	inst := captureInstance(t)
+
+	root := m.Start("slow", nil, 0)
+	m.Attribute(inst, root)
+	inside := m.start("slow", nil, 0, nil, root)
+	outside := m.Start("slow", nil, 0)
+
+	for _, id := range []string{inside.ID(), root.ID()} {
+		if _, err := m.PeepJob(inst, []byte(`{"job":"`+id+`"}`)); err != nil {
+			t.Errorf("peep %q in the subtree: %v", id, err)
+		}
+	}
+	if _, err := m.KillJob(inst, []byte(`{"job":"`+inside.ID()+`"}`)); err != nil {
+		t.Errorf("kill inside the subtree: %v", err)
+	}
+	for _, id := range []string{outside.ID()} {
+		if _, err := m.PeepJob(inst, []byte(`{"job":"`+id+`"}`)); err == nil {
+			t.Errorf("peep %q outside the subtree was allowed", id)
+		}
+		if _, err := m.KillJob(inst, []byte(`{"job":"`+id+`"}`)); err == nil {
+			t.Errorf("kill %q outside the subtree was allowed", id)
+		}
+	}
+
+	// The unattributed caller — the top-level agent — sees its whole tree.
+	m.Release(inst, root)
+	if _, err := m.PeepJob(inst, []byte(`{"job":"`+outside.ID()+`"}`)); err != nil {
+		t.Errorf("unattributed peep: %v", err)
+	}
+}
+
 func TestChildEventsGoToTheParentListener(t *testing.T) {
 	rec := &recorder{}
 	m := New(Options{Publisher: rec})

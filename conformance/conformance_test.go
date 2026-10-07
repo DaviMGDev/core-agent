@@ -155,6 +155,8 @@ type world struct {
 	subBlock   chan struct{}
 	subInst    *rt.Instance
 	subSched   *rt.Scheduler
+	subChild   *toolmanager.Job
+	subEvents  <-chan toolmanager.Event
 
 	// shared
 	err error

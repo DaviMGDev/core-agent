@@ -103,13 +103,23 @@ func (a *fakeSubAgent) snapshot() []subWake {
 	return append([]subWake(nil), a.wakes...)
 }
 
-func (a *fakeSubAgent) lastChild() string {
+// deepest returns the deepest job the fake agent has started. Nested turns
+// can append their handles out of order, so the tree decides, not the list.
+func (a *fakeSubAgent) deepest(m *toolmanager.Manager) (*toolmanager.Job, bool) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.children) == 0 {
-		return ""
+	ids := append([]string(nil), a.children...)
+	a.mu.Unlock()
+	var best *toolmanager.Job
+	for _, id := range ids {
+		job, ok := m.Job(id)
+		if !ok {
+			continue
+		}
+		if best == nil || job.Depth() > best.Depth() {
+			best = job
+		}
 	}
-	return a.children[len(a.children)-1]
+	return best, best != nil
 }
 
 func registerSubagentSteps(sc *godog.ScenarioContext) {
@@ -133,6 +143,10 @@ func registerSubagentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a manager with a recursing subagent tool$`, stepManagerRecursingSubagent)
 	sc.Step(`^the subagent chain is started$`, stepStartSubagentChain)
 	sc.Step(`^the innermost job fails with a depth reason$`, stepInnermostDepthFailure)
+	sc.Step(`^a manager with a parent job and a child job$`, stepManagerParentChild)
+	sc.Step(`^the child job completes$`, stepChildCompletes)
+	sc.Step(`^the parent's listener receives the child's events$`, stepParentListenerEvents)
+	sc.Step(`^the bus saw only the root job's start$`, stepBusRootOnly)
 }
 
 // newSubagentWorld wires a manager with the subagent tool over the fake agent.
@@ -360,21 +374,102 @@ func stepInnermostDepthFailure(ctx context.Context) error {
 	w := worldFrom(ctx)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if id := w.subAgent.lastChild(); id != "" {
-			if job, ok := w.subManager.Job(id); ok {
-				st := job.Wait()
-				if st.State != toolmanager.StateFailed {
-					return fmt.Errorf("innermost job = %s, want failed", st.State)
-				}
-				if !strings.Contains(st.Error, "depth") {
-					return fmt.Errorf("innermost job error = %q, want a depth reason", st.Error)
-				}
-				return nil
+		if job, ok := w.subAgent.deepest(w.subManager); ok && job.Depth() > subagent.DefaultDepth {
+			st := job.Wait()
+			if st.State != toolmanager.StateFailed {
+				return fmt.Errorf("job at depth %d = %s, want failed", job.Depth(), st.State)
 			}
+			if !strings.Contains(st.Error, "depth") {
+				return fmt.Errorf("job at depth %d error = %q, want a depth reason", job.Depth(), st.Error)
+			}
+			return nil
 		}
 		time.Sleep(time.Millisecond)
 	}
-	return errors.New("no nested subagent call was started")
+	return errors.New("no job past the depth bound was started")
+}
+
+func stepManagerParentChild(ctx context.Context) error {
+	w := worldFrom(ctx)
+	w.tmRecorder = &tmRecorder{}
+	w.subManager = toolmanager.New(toolmanager.Options{Publisher: w.tmRecorder})
+	w.subBlock = make(chan struct{})
+	block := w.subBlock
+	if err := w.subManager.Registry().Declare(toolmanager.Tool{Name: "slow", Run: func(ctx context.Context, _ json.RawMessage, _ *toolmanager.Output) (any, error) {
+		select {
+		case <-block:
+			return "released", nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}); err != nil {
+		return err
+	}
+	if err := w.subManager.Registry().Declare(toolmanager.Tool{Name: "echo", Run: func(context.Context, json.RawMessage, *toolmanager.Output) (any, error) {
+		return "hi", nil
+	}}); err != nil {
+		return err
+	}
+	inst, sched, err := captureInstance()
+	if err != nil {
+		return err
+	}
+	w.subSched, w.subInst = sched, inst
+	w.subJob = w.subManager.Start("slow", nil, 0)
+	w.subManager.Attribute(inst, w.subJob)
+	w.subEvents = w.subManager.Listen(w.subJob)
+	raw, err := w.subManager.StartJob(inst, []byte(`{"tool":"echo"}`))
+	if err != nil {
+		return err
+	}
+	var handle struct {
+		Job string `json:"job"`
+	}
+	if err := json.Unmarshal(raw, &handle); err != nil {
+		return err
+	}
+	job, ok := w.subManager.Job(handle.Job)
+	if !ok {
+		return fmt.Errorf("child job %q not found", handle.Job)
+	}
+	w.subChild = job
+	return nil
+}
+
+func stepChildCompletes(ctx context.Context) error {
+	w := worldFrom(ctx)
+	if st := w.subChild.Wait(); st.State != toolmanager.StateDone {
+		return fmt.Errorf("child job = %s (%s), want done", st.State, st.Error)
+	}
+	return nil
+}
+
+func stepParentListenerEvents(ctx context.Context) error {
+	w := worldFrom(ctx)
+	var topics []string
+	deadline := time.Now().Add(3 * time.Second)
+	for len(topics) < 2 && time.Now().Before(deadline) {
+		select {
+		case ev := <-w.subEvents:
+			topics = append(topics, ev.Topic)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if len(topics) != 2 || topics[0] != "job.started" || topics[1] != "job.completed" {
+		return fmt.Errorf("parent listener topics = %v, want the child's start and completion", topics)
+	}
+	return nil
+}
+
+func stepBusRootOnly(ctx context.Context) error {
+	w := worldFrom(ctx)
+	if got := len(w.tmRecorder.byTopic("job.started")); got != 1 {
+		return fmt.Errorf("bus job.started = %d, want only the root job's", got)
+	}
+	if got := len(w.tmRecorder.byTopic("job.completed")); got != 0 {
+		return fmt.Errorf("bus job.completed = %d, want the child's event to stay with the parent", got)
+	}
+	return nil
 }
 
 func stepStartSubagentConversation(ctx context.Context, brief string) error {

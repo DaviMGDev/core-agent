@@ -51,6 +51,21 @@ func (j *Job) Caller() *runtime.Instance {
 	return j.caller
 }
 
+// descendantOf reports whether the job is root or one of root's descendants.
+func (j *Job) descendantOf(root *Job) bool {
+	cur := j
+	for cur != nil {
+		if cur == root {
+			return true
+		}
+		cur.mu.Lock()
+		parent := cur.parent
+		cur.mu.Unlock()
+		cur = parent
+	}
+	return false
+}
+
 // Depth returns the job's depth in the tree: a root job is 1, and a child is
 // one deeper than its parent.
 func (j *Job) Depth() int {

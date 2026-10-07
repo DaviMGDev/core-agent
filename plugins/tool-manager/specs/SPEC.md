@@ -54,7 +54,10 @@ the error, and `job.killed`. A reclaimed job emits nothing.
 Routing follows the tree: a job with a parent delivers its events to the
 parent's listener (`Listen`/`Unlisten`) and never to the bus — the parent is
 the sole listener to its child's subtree events — while a root job publishes
-on the bus. An event whose parent has no listener is dropped.
+on the bus. An event whose parent has no listener is dropped. The
+guest-facing `peep` and `kill` imports are subtree-scoped the same way: a
+caller attributed to a job reaches that job's subtree; an unattributed
+caller — the top-level agent — reaches its whole tree.
 
 ## Conformance
 
