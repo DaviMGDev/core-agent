@@ -8,11 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/DaviMGDev/core-agent/internal/config"
 	"github.com/DaviMGDev/core-agent/plugins/subagent"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 )
@@ -62,6 +65,104 @@ type providerRequest struct {
 	body string
 }
 
+// testProvider is one scripted provider-document entry.
+type testProvider struct {
+	Name       string   `json:"name"`
+	Endpoint   string   `json:"endpoint,omitempty"`
+	Credential string   `json:"credential,omitempty"`
+	Models     []string `json:"models"`
+}
+
+// providerDoc marshals a scripted provider document.
+func providerDoc(providers ...testProvider) string {
+	b, err := json.Marshal(struct {
+		Providers []testProvider `json:"providers"`
+	}{Providers: providers})
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// testResolved loads the embedded defaults with isolated directories and an
+// empty environment.
+func testResolved(t *testing.T) *config.Config {
+	t.Helper()
+	resolved, err := config.Load(config.Options{
+		HomeDir:   t.TempDir(),
+		WorkDir:   t.TempDir(),
+		LookupEnv: func(string) (string, bool) { return "", false },
+	})
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	return resolved
+}
+
+// sessionFrom builds a session configuration from a resolved layer.
+func sessionFrom(t *testing.T, resolved *config.Config, nick string) sessionConfig {
+	t.Helper()
+	payloads, err := resolved.Payloads()
+	if err != nil {
+		t.Fatalf("config.Payloads: %v", err)
+	}
+	if nick != "" {
+		payloads.Nick = nick
+	}
+	return sessionConfig{
+		nick:      payloads.Nick,
+		providers: payloads.Providers,
+		models:    payloads.Models,
+		history:   payloads.History,
+		context:   payloads.Context,
+		agent:     payloads.Agent,
+		credentials: func(name string) (string, bool) {
+			return resolved.Resolve(name, nil)
+		},
+	}
+}
+
+// TestLoadSessionPrecedence proves the entry's order: files lose to the
+// environment, and -nick beats both.
+func TestLoadSessionPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CORE_DIR", dir)
+	if err := config.EnsureDefaults(dir); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	custom, err := json.Marshal(map[string]any{
+		"nick":  "file-nick",
+		"agent": map[string]string{"model": "file-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, config.SettingsFile), custom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CORE_NICK", "env-nick")
+	t.Setenv("CORE_MODEL", "env-model")
+
+	fromEnv, err := loadSession(false, "")
+	if err != nil {
+		t.Fatalf("loadSession: %v", err)
+	}
+	if fromEnv.nick != "env-nick" {
+		t.Errorf("nick = %q, want the environment to beat the file", fromEnv.nick)
+	}
+	if !strings.Contains(fromEnv.agent, `"model":"env-model"`) {
+		t.Errorf("agent payload = %s, want the environment model", fromEnv.agent)
+	}
+
+	fromFlag, err := loadSession(false, "flag-nick")
+	if err != nil {
+		t.Fatalf("loadSession: %v", err)
+	}
+	if fromFlag.nick != "flag-nick" {
+		t.Errorf("nick = %q, want the flag to beat the environment", fromFlag.nick)
+	}
+}
+
 // TestRunCallsTheProviderOverHTTP scripts a session against a local provider
 // and asserts the whole path: the REPL pipeline reaches model-manager, whose
 // guest performs the exchange over the loader's HTTP transport, with the
@@ -83,15 +184,11 @@ func TestRunCallsTheProviderOverHTTP(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := sessionConfig{
-		nick: "tester",
-		providers: fmt.Sprintf(`{"providers":[`+
-			`{"name":"local","endpoint":%q,"credential":"env:CORE_AGENT_TEST_KEY","models":["llama-3.2"]},`+
-			`{"name":"openai","endpoint":"https://api.openai.com/v1","credential":"env:OPENAI_API_KEY","models":["gpt-4o-mini"]}]}`, srv.URL),
-		models:  modelConfig,
-		history: historyConversation,
-		context: contextConfig,
-	}
+	cfg := sessionFrom(t, testResolved(t), "tester")
+	cfg.providers = providerDoc(
+		testProvider{Name: "local", Endpoint: srv.URL, Credential: "env:CORE_AGENT_TEST_KEY", Models: []string{"gemma4:cloud"}},
+		testProvider{Name: "openai", Endpoint: "https://api.openai.com/v1", Credential: "env:OPENAI_API_KEY", Models: []string{"gpt-4o-mini"}},
+	)
 
 	var out transcript
 	in := strings.NewReader("hello there\n:help\n:quit\n")
@@ -102,7 +199,7 @@ func TestRunCallsTheProviderOverHTTP(t *testing.T) {
 
 	for _, want := range []string{
 		`provider-manager: 2 provider(s) ready`,
-		`model-manager: 3 model view(s) ready`,
+		`model-manager: 2 model view(s) ready`,
 		`chat-history: conversation "main" open`,
 		`context-manager: window ready (budget 4096)`,
 		`repl: tester joined`,
@@ -132,7 +229,7 @@ func TestRunCallsTheProviderOverHTTP(t *testing.T) {
 	if req.auth != "Bearer s3cret" {
 		t.Errorf("authorization = %q, want the host-resolved secret", req.auth)
 	}
-	for _, want := range []string{`"model":"llama-3.2"`, `"role":"user"`, `"content":"hello there"`} {
+	for _, want := range []string{`"model":"gemma4:cloud"`, `"role":"user"`, `"content":"hello there"`} {
 		if !strings.Contains(req.body, want) {
 			t.Errorf("provider body missing %s: %s", want, req.body)
 		}
@@ -140,10 +237,14 @@ func TestRunCallsTheProviderOverHTTP(t *testing.T) {
 }
 
 // TestRunMockLLMAnswersWithoutProvider runs a session with the in-process mock
-// provider: no server, no network, and the same pipeline.
+// provider: no server, no network, and the same pipeline — resolved entirely
+// from a fresh .core/ directory the layer seeds itself.
 func TestRunMockLLMAnswersWithoutProvider(t *testing.T) {
-	cfg := defaultConfig("tester")
-	cfg.providers = mockProviderConfig
+	t.Setenv("CORE_DIR", t.TempDir())
+	cfg, err := loadSession(true, "tester")
+	if err != nil {
+		t.Fatalf("loadSession: %v", err)
+	}
 
 	var out transcript
 	in := strings.NewReader("hello there\n:quit\n")
@@ -154,7 +255,7 @@ func TestRunMockLLMAnswersWithoutProvider(t *testing.T) {
 
 	for _, want := range []string{
 		`provider-manager: 1 provider(s) ready`,
-		`mock(llama-3.2): hello there (context:1)`,
+		`mock(gemma4:cloud): hello there (context:1)`,
 		`repl: session closed`,
 		`provider-manager: providers released`,
 	} {
@@ -192,13 +293,8 @@ func TestRunMockSessionSubagentRunAndKill(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := sessionConfig{
-		nick:      "tester",
-		providers: fmt.Sprintf(`{"providers":[{"name":"local","endpoint":%q,"models":["llama-3.2"]}]}`, srv.URL),
-		models:    modelConfig,
-		history:   historyConversation,
-		context:   contextConfig,
-	}
+	cfg := sessionFrom(t, testResolved(t), "tester")
+	cfg.providers = providerDoc(testProvider{Name: "local", Endpoint: srv.URL, Models: []string{"gemma4:cloud"}})
 	managerReady := make(chan *toolmanager.Manager, 1)
 	cfg.onComposed = func(m *toolmanager.Manager) { managerReady <- m }
 
@@ -271,6 +367,66 @@ func TestRunMockSessionSubagentRunAndKill(t *testing.T) {
 	}
 }
 
+// TestRunResolvesAuthStoreCredential proves an auth: reference resolves
+// host-side from auth.json — the guest only ever sends the reference — and a
+// same-named environment variable shadows the stored secret.
+func TestRunResolvesAuthStoreCredential(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		auth string
+		seen bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth, seen = r.Header.Get("Authorization"), true
+		mu.Unlock()
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"auth ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	t.Setenv("CORE_DIR", dir)
+	if err := config.EnsureDefaults(dir); err != nil {
+		t.Fatal(err)
+	}
+	providers := providerDoc(testProvider{Name: "ollama", Endpoint: srv.URL, Credential: "auth:ollama", Models: []string{"gemma4:cloud"}})
+	if err := os.WriteFile(filepath.Join(dir, config.ProvidersFile), []byte(providers), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := json.Marshal(map[string]any{"ollama": map[string]string{"type": "api_key", "key": "sk-auth"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, config.AuthFile), store, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(t *testing.T) (string, bool, string) {
+		t.Helper()
+		cfg, err := loadSession(false, "tester")
+		if err != nil {
+			t.Fatalf("loadSession: %v", err)
+		}
+		var out transcript
+		if err := runConfig(context.Background(), strings.NewReader("hello\n:quit\n"), &out, cfg); err != nil {
+			t.Fatalf("runConfig: %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return auth, seen, out.String()
+	}
+
+	if got, ok, log := run(t); got != "Bearer sk-auth" {
+		t.Fatalf("authorization = %q (seen=%v), want the auth.json secret:\n%s", got, ok, log)
+	}
+
+	t.Setenv("ollama", "sk-env")
+	if got, ok, log := run(t); got != "Bearer sk-env" {
+		t.Fatalf("authorization = %q (seen=%v), want the environment to shadow the store:\n%s", got, ok, log)
+	}
+}
+
 // TestRunWithoutCredentialSendsNoAuthorization covers a keyless provider such
 // as a local runtime: the request goes out with no Authorization header.
 func TestRunWithoutCredentialSendsNoAuthorization(t *testing.T) {
@@ -288,8 +444,8 @@ func TestRunWithoutCredentialSendsNoAuthorization(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := defaultConfig("tester")
-	cfg.providers = fmt.Sprintf(`{"providers":[{"name":"local","endpoint":%q,"models":["llama-3.2"]}]}`, srv.URL)
+	cfg := sessionFrom(t, testResolved(t), "tester")
+	cfg.providers = providerDoc(testProvider{Name: "local", Endpoint: srv.URL, Models: []string{"gemma4:cloud"}})
 
 	var out transcript
 	in := strings.NewReader("hello\n:quit\n")
