@@ -144,6 +144,9 @@ func registerSubagentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the subagent chain is started$`, stepStartSubagentChain)
 	sc.Step(`^the innermost job fails with a depth reason$`, stepInnermostDepthFailure)
 	sc.Step(`^a manager with a parent job and a child job$`, stepManagerParentChild)
+	sc.Step(`^a manager with a running parent job and child job$`, stepManagerRunningParentChild)
+	sc.Step(`^the parent job is killed$`, stepKillParent)
+	sc.Step(`^the child job is killed at once$`, stepChildKilled)
 	sc.Step(`^the child job completes$`, stepChildCompletes)
 	sc.Step(`^the parent's listener receives the child's events$`, stepParentListenerEvents)
 	sc.Step(`^the bus saw only the root job's start$`, stepBusRootOnly)
@@ -389,8 +392,9 @@ func stepInnermostDepthFailure(ctx context.Context) error {
 	return errors.New("no job past the depth bound was started")
 }
 
-func stepManagerParentChild(ctx context.Context) error {
-	w := worldFrom(ctx)
+// setupParentChild builds a root job and a job adopted under it, both of the
+// given child tool. The root is a blocking "slow" job, so it stays running.
+func setupParentChild(w *world, childTool string) error {
 	w.tmRecorder = &tmRecorder{}
 	w.subManager = toolmanager.New(toolmanager.Options{Publisher: w.tmRecorder})
 	w.subBlock = make(chan struct{})
@@ -418,7 +422,7 @@ func stepManagerParentChild(ctx context.Context) error {
 	w.subJob = w.subManager.Start("slow", nil, 0)
 	w.subManager.Attribute(inst, w.subJob)
 	w.subEvents = w.subManager.Listen(w.subJob)
-	raw, err := w.subManager.StartJob(inst, []byte(`{"tool":"echo"}`))
+	raw, err := w.subManager.StartJob(inst, []byte(`{"tool":"`+childTool+`"}`))
 	if err != nil {
 		return err
 	}
@@ -434,6 +438,32 @@ func stepManagerParentChild(ctx context.Context) error {
 	}
 	w.subChild = job
 	return nil
+}
+
+func stepManagerParentChild(ctx context.Context) error {
+	return setupParentChild(worldFrom(ctx), "echo")
+}
+
+func stepManagerRunningParentChild(ctx context.Context) error {
+	return setupParentChild(worldFrom(ctx), "slow")
+}
+
+func stepKillParent(ctx context.Context) error {
+	w := worldFrom(ctx)
+	w.subManager.Kill(w.subJob)
+	return nil
+}
+
+func stepChildKilled(ctx context.Context) error {
+	w := worldFrom(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if w.subChild.State() == toolmanager.StateKilled {
+			return nil
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return fmt.Errorf("child job = %s, want killed", w.subChild.State())
 }
 
 func stepChildCompletes(ctx context.Context) error {

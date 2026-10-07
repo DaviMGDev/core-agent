@@ -80,3 +80,10 @@ Feature: Subagent — an agent callable as a tool
       When the child job completes
       Then the parent's listener receives the child's events
       And the bus saw only the root job's start
+
+  Rule: Killing a parent kills its descendants
+
+    Scenario: Killing the parent kills the child
+      Given a manager with a running parent job and child job
+      When the parent job is killed
+      Then the child job is killed at once
