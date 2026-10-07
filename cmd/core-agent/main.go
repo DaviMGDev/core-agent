@@ -1,15 +1,16 @@
 // Command core-agent drives the composed system.
 //
-// It registers the five starter plugin guests with memento, composes one
-// fiber per plugin through the scheduler, hosts the REPL session, and
-// unloads on exit. The entry drives the scheduler directly instead of the
-// loader because the REPL's activation hosts the interactive session, which
-// outlives the loader's quiescence window (the pattern the kernel documents
-// in examples/chat).
+// It registers the six starter plugin guests with memento, composes one
+// fiber per plugin through the scheduler, drives the terminal session — the
+// host reads stdin and is woken for chat.message — and unloads on exit. The
+// entry drives the scheduler directly instead of the loader because the
+// interactive session outlives the loader's quiescence window (the pattern
+// the kernel documents in examples/chat).
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -114,18 +115,17 @@ type plugin struct {
 	ref     string
 	wasm    []byte
 	payload any
-	stdio   bool
 }
 
 // starterPlugins returns the six plugins in dependency order, REPL last.
 func starterPlugins(cfg sessionConfig) []plugin {
 	return []plugin{
-		{"provider-manager", providermanager.Wasm, cfg.providers, false},
-		{"model-manager", modelmanager.Wasm, cfg.models, false},
-		{"chat-history", chathistory.Wasm, cfg.history, false},
-		{"context-manager", contextmanager.Wasm, cfg.context, false},
-		{"agent", agent.Wasm, cfg.agent, false},
-		{"repl-chat", replchat.Wasm, cfg.nick, true},
+		{"provider-manager", providermanager.Wasm, cfg.providers},
+		{"model-manager", modelmanager.Wasm, cfg.models},
+		{"chat-history", chathistory.Wasm, cfg.history},
+		{"context-manager", contextmanager.Wasm, cfg.context},
+		{"agent", agent.Wasm, cfg.agent},
+		{"repl-chat", replchat.Wasm, cfg.nick},
 	}
 }
 
@@ -144,7 +144,7 @@ func main() {
 	}
 }
 
-// runConfig composes the six plugins from cfg, hosts one REPL session on
+// runConfig composes the six plugins from cfg, drives one REPL session on
 // in/out, and unloads everything before returning. Egress is open; credential
 // references in request headers are resolved from the host environment, so a
 // guest holds `env:NAME` and never a secret.
@@ -167,17 +167,15 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	sched := runtime.New()
 	defer sched.Close()
 
-	fibers := make([]mcontext.FiberID, 0, 6)
-	for _, p := range starterPlugins(cfg) {
-		opts := []wasm.ComponentOption{
+	plugins := starterPlugins(cfg)
+	comps := make([]*wasm.WASMComponent, 0, len(plugins))
+	fibers := make([]mcontext.FiberID, 0, len(plugins))
+	for _, p := range plugins {
+		comp, err := wasm.NewComponent(ctx, engine, p.wasm,
 			wasm.WithKeyRegistry(keys),
 			wasm.WithLogWriter(out),
 			wasm.WithModuleName(p.ref),
-		}
-		if p.stdio {
-			opts = append(opts, wasm.WithStdin(in), wasm.WithStdout(out), wasm.WithStderr(out))
-		}
-		comp, err := wasm.NewComponent(ctx, engine, p.wasm, opts...)
+		)
 		if err != nil {
 			return fmt.Errorf("core-agent: %s: %w", p.ref, err)
 		}
@@ -185,12 +183,37 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 		if err != nil {
 			return fmt.Errorf("core-agent: %s: %w", p.ref, err)
 		}
+		comps = append(comps, comp)
 		fibers = append(fibers, id)
 	}
 
-	if err := waitSession(sched, fibers); err != nil {
+	if err := waitActive(sched, fibers); err != nil {
 		return err
 	}
+
+	// The terminal guest is woken for every chat.message — a prompted reply
+	// and an unprompted message take the same path — while the host drives
+	// the session loop; the guest's module lock is free between wakes.
+	terminal := comps[len(comps)-1]
+	sub := bus.Subscribe(notifications.TopicChatMessage, terminalWaker{ctx: ctx, comp: terminal, log: out})
+	session := replchat.New(cfg.nick)
+	emit := func(s string) { _, _ = out.Write([]byte(s)) }
+	if err := session.Run(in, emit, func(line string) (string, error) {
+		answer, err := invokeTerminal(ctx, terminal, replchat.Wake{Line: line})
+		if err != nil {
+			return "", err
+		}
+		if answer.Error != "" {
+			return "", errors.New(answer.Error)
+		}
+		// The turn's message is published; let the wake render it before the
+		// next prompt so the transcript stays ordered.
+		sub.WaitIdle()
+		return "", nil
+	}); err != nil {
+		return fmt.Errorf("core-agent: session: %w", err)
+	}
+	sub.WaitIdle()
 
 	for i := len(fibers) - 1; i >= 0; i-- {
 		if err := sched.Remove(fibers[i]); err != nil {
@@ -200,11 +223,46 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	return waitGone(sched, fibers)
 }
 
-// waitSession waits until the REPL fiber settles: active once the session
-// ended, or failed. Every other fiber must stay healthy meanwhile.
-func waitSession(sched *runtime.Scheduler, fibers []mcontext.FiberID) error {
-	repl := fibers[len(fibers)-1]
+// invokeTerminal sends one wake to the terminal guest and reads its answer.
+func invokeTerminal(ctx context.Context, comp *wasm.WASMComponent, wake replchat.Wake) (replchat.Answer, error) {
+	req, err := json.Marshal(wake)
+	if err != nil {
+		return replchat.Answer{}, err
+	}
+	resp, err := comp.Handle(ctx, req)
+	if err != nil {
+		return replchat.Answer{}, err
+	}
+	var answer replchat.Answer
+	if err := json.Unmarshal(resp, &answer); err != nil {
+		return replchat.Answer{}, fmt.Errorf("core-agent: reading terminal answer: %w", err)
+	}
+	return answer, nil
+}
+
+// terminalWaker wakes the terminal guest with one batch of chat.message
+// events: rendering is the guest's work, the host only routes the wake.
+type terminalWaker struct {
+	ctx  context.Context
+	comp *wasm.WASMComponent
+	log  io.Writer
+}
+
+func (w terminalWaker) Wake(sub *notifications.Subscription) {
+	busEvents := sub.Take()
+	wake := replchat.Wake{Events: make([]replchat.Event, 0, len(busEvents))}
+	for _, e := range busEvents {
+		wake.Events = append(wake.Events, replchat.Event{Topic: e.Topic, Payload: json.RawMessage(e.Payload)})
+	}
+	if _, err := invokeTerminal(w.ctx, w.comp, wake); err != nil {
+		fmt.Fprintf(w.log, "repl: wake: %v\n", err)
+	}
+}
+
+// waitActive waits until every fiber has activated; the first failure aborts.
+func waitActive(sched *runtime.Scheduler, fibers []mcontext.FiberID) error {
 	for {
+		active := 0
 		for _, id := range fibers {
 			info, ok := sched.Inspect(id)
 			if !ok {
@@ -213,8 +271,11 @@ func waitSession(sched *runtime.Scheduler, fibers []mcontext.FiberID) error {
 			if info.State == runtime.StateFailed {
 				return fmt.Errorf("core-agent: plugin fiber %d failed: %w", id, info.Err)
 			}
+			if info.State == runtime.StateActive {
+				active++
+			}
 		}
-		if info, ok := sched.Inspect(repl); ok && info.State == runtime.StateActive {
+		if active == len(fibers) {
 			return nil
 		}
 		time.Sleep(5 * time.Millisecond)

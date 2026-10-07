@@ -25,8 +25,9 @@ loaded dynamically as a `.wasm` guest through memento's loader on wazero.
 
 The first cut is deliberately small: five starter plugins, and the agent
 layer adds the agent that owns the turn loop on top of them (the terminal
-invokes it; the tool manager and the notification bus are host-side, D14).
-The LLM reaches the system through the REPL, like any other user.
+invokes it and renders its `chat.message` wakes; the tool manager and the
+notification bus are host-side, D14). The LLM reaches the system through the
+REPL, like any other user.
 
 Composition is the point. Plugins declare the context keys they inject and
 provide; memento activates a plugin only when its keys are satisfied,
@@ -87,6 +88,8 @@ Acceptance criteria (EARS):
   a response. (Event-driven)
 - WHEN the line is an ordinary chat line THE REPL SHALL return exactly one
   response line for the turn. (Event-driven)
+- WHEN a `chat.message` event arrives while no user line is pending THE
+  terminal SHALL render it. (Event-driven)
 
 **US-003 — Management surfaces behind the plugins**
 
@@ -147,8 +150,10 @@ ABI imports.
 `memento.job_kill`, `memento.job_result_len`, `memento.job_result`,
 `memento.publish`, `memento.cancel_poll`, `memento.register_effect`, and
 `memento.log`. Strings cross as (pointer, length) pairs into guest memory; the
-ABI's isolated contract lives in memento's `plugins/wasm/specs/`. WASI stdio
-is wired for the REPL guest.
+ABI's isolated contract lives in memento's `plugins/wasm/specs/`. The
+terminal guest exports `memento_alloc`/`memento_handle` so the host can wake
+it with one batch of events at a time; the entry owns stdin, and no guest
+reads WASI stdio.
 
 **Composition (starter keys).** One shared key registry maps guest key names to
 memento keys:
@@ -163,12 +168,13 @@ memento keys:
 | repl-chat | `agent-loop` | `repl` |
 
 **Entry.** `cmd/core-agent` registers the six compiled guests, composes them
-through the scheduler (`Insert` / `Inspect` / `Remove`), hosts the REPL
-session, and unloads on exit. The scheduler path is deliberate: the REPL's
-activation hosts the interactive session, which outlives the loader's
-five-second quiescence window (memento documents the pattern in
-`examples/chat`); reconciliation stays the kernel mechanism for non-blocking
-compositions.
+through the scheduler (`Insert` / `Inspect` / `Remove`), drives the terminal
+session over the repl-chat library, and unloads on exit. The scheduler path
+is deliberate: an interactive session outlives the loader's five-second
+quiescence window (memento documents the pattern in `examples/chat`), and
+the session loop is host-driven — reading stdin and receiving a bus wake
+cannot both live in a serialized guest — so reconciliation stays the kernel
+mechanism for non-blocking compositions.
 
 **Registration.** A guest registers a provided key by binding its value during
 activation (`memento.bind`): the kernel installs the binding as a revertible
@@ -194,14 +200,19 @@ mechanism.
 
 **REPL protocol.** `you> ` before each read; a response line after each
 non-command turn; `:help`, `:quit` (aliases `:q`, `:exit`) are commands; blank
-lines produce a new prompt only. Lines come from WASI stdin; output goes
-through the kernel log import; the session ends on `:quit` or EOF, and unload
-closes it.
+lines produce a new prompt only. The host entry runs the loop over the
+repl-chat library: it reads stdin, emits the prompt, hands each chat line to
+the terminal guest, and waits for that turn's `chat.message` to render before
+the next prompt. A message published while the session waits renders through
+the same wake. The session ends on `:quit` or EOF, and unload closes it.
 
 **Turn pipeline.** A chat turn flows through the composed plugins over the
-loader's `invoke` ABI: the REPL appends the user turn to chat-history, reads
-recent turns, projects them into the context window, asks model-manager to
-respond, and records the assistant reply. model-manager resolves the view to
+loader's `invoke` ABI: the terminal hands the line to the agent, which
+appends the user turn to chat-history, reads recent turns, projects them into
+the context window, asks model-manager to respond, and records the assistant
+reply. When it speaks, the agent publishes the message as `chat.message`;
+the terminal renders the event, so a prompted reply and an unprompted
+message take the same path. model-manager resolves the view to
 its concrete models, maps the chosen model to a provider through the injected
 provider registry, and performs the exchange over the loader's host-mediated
 HTTP transport; the provider's answer is the response line. A fallback view
@@ -327,3 +338,10 @@ host-side anymore.
   cannot. Guests reach them only through the ABI imports, never around.
   Subscriptions are host-configured — the assembler decides which component
   hears which topic — and waking a guest subscriber invokes its handler.
+- **D15 — The terminal's loop is host-driven.** The entry runs the repl-chat
+  session loop and wakes the terminal guest once per `chat.message`; the
+  guest runs one agent turn per line and renders the wake's events. A guest
+  that hosted the loop would hold its module lock for the whole session, so
+  no wake could reach it (memento D14: a wake is a call like any other). The
+  terminal is therefore a view: the transcript stays chat-history's, and the
+  guest's answer to a line carries no text.
