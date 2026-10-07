@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DaviMGDev/core-agent/internal/config"
 	"github.com/DaviMGDev/core-agent/plugins/agent"
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	contextmanager "github.com/DaviMGDev/core-agent/plugins/context-manager"
@@ -33,61 +34,66 @@ import (
 	"github.com/DaviMGDev/memento/runtime"
 )
 
-// Defaults for the entry tree: JSON config for the management plugins and a
-// nickname for the REPL (system spec D10). Credentials are references, never
-// secrets (provider-manager spec PM2).
-const (
-	// DefaultNick is the REPL nickname when -nick is empty.
-	DefaultNick = "agent"
-
-	providerConfig = `{"providers":[` +
-		`{"name":"local","endpoint":"http://127.0.0.1:11434/v1","models":["llama-3.2"]},` +
-		`{"name":"openai","endpoint":"https://api.openai.com/v1","credential":"env:OPENAI_API_KEY","models":["gpt-4o-mini"]}]}`
-
-	// mockProviderConfig backs -mock: one in-process mock provider serving the
-	// models the default views resolve to, so a session answers without a
-	// provider and without a single request leaving the process.
-	mockProviderConfig = `{"providers":[{"name":"mock","mock":true,"models":["llama-3.2","gpt-4o-mini"]}]}`
-
-	modelConfig = `{"models":[` +
-		`{"name":"fast","alias":"llama-3.2"},` +
-		`{"name":"reliable","fallback":["llama-3.2","gpt-4o-mini"]},` +
-		`{"name":"panel","discuss":["llama-3.2","gpt-4o-mini"]}]}`
-
-	historyConversation = "main"
-	contextConfig       = `{"budget":4096}`
-	agentConfig         = `{"conversation":"main","model":"fast"}`
-)
-
-// sessionConfig is one composed session's configuration: the nickname and the
-// payloads handed to the six plugins. Tests override the provider document to
+// sessionConfig is one composed session's configuration: the nickname, the
+// payloads handed to the six plugins, and the host credential resolver the
+// HTTP transport substitutes through. Tests override the provider document to
 // point at a local server, which is what turns the deterministic stub into a
 // real provider call. onComposed, when set, receives the tool manager once
 // the six plugins are active: the entry's tests drive the host side (peep,
 // kill) while the session runs.
 type sessionConfig struct {
-	nick       string
-	providers  string
-	models     string
-	history    string
-	context    string
-	agent      string
-	onComposed func(*toolmanager.Manager)
+	nick        string
+	providers   string
+	models      string
+	history     string
+	context     string
+	agent       string
+	credentials func(name string) (string, bool)
+	onComposed  func(*toolmanager.Manager)
 }
 
-// defaultConfig returns the shipped configuration for a session named nick.
-func defaultConfig(nick string) sessionConfig {
-	if nick == "" {
-		nick = DefaultNick
+// loadSession resolves the .core/ layer into a session configuration: it
+// seeds the user scope when missing (never overwriting), loads and merges the
+// layer, splits the payloads, swaps the provider document in mock mode, and
+// applies -nick last (defaults < user < project < env < flags).
+func loadSession(mock bool, nick string) (sessionConfig, error) {
+	opts := config.Options{}
+	userDir, _, err := config.Dirs(opts)
+	if err != nil {
+		return sessionConfig{}, err
+	}
+	if err := config.EnsureDefaults(userDir); err != nil {
+		return sessionConfig{}, err
+	}
+	resolved, err := config.Load(opts)
+	if err != nil {
+		return sessionConfig{}, err
+	}
+	payloads, err := resolved.Payloads()
+	if err != nil {
+		return sessionConfig{}, err
+	}
+	if mock {
+		mockDoc, err := resolved.MockProviders()
+		if err != nil {
+			return sessionConfig{}, err
+		}
+		payloads.Providers = string(mockDoc)
+	}
+	if nick != "" {
+		payloads.Nick = nick
 	}
 	return sessionConfig{
-		nick:      nick,
-		providers: providerConfig,
-		models:    modelConfig,
-		history:   historyConversation,
-		context:   contextConfig,
-		agent:     agentConfig,
-	}
+		nick:      payloads.Nick,
+		providers: payloads.Providers,
+		models:    payloads.Models,
+		history:   payloads.History,
+		context:   payloads.Context,
+		agent:     payloads.Agent,
+		credentials: func(name string) (string, bool) {
+			return resolved.Resolve(name, nil)
+		},
+	}, nil
 }
 
 // busServices adapts the notification bus to the loader's host-services
@@ -139,13 +145,14 @@ func starterPlugins(cfg sessionConfig) []plugin {
 }
 
 func main() {
-	nick := flag.String("nick", DefaultNick, "nickname the REPL announces")
+	nick := flag.String("nick", "", "nickname the REPL announces")
 	mock := flag.Bool("mock", false, "answer with an in-process mock LLM instead of calling a provider")
 	flag.Parse()
 
-	cfg := defaultConfig(*nick)
-	if *mock {
-		cfg.providers = mockProviderConfig
+	cfg, err := loadSession(*mock, *nick)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "core-agent:", err)
+		os.Exit(1)
 	}
 	if err := runConfig(context.Background(), os.Stdin, os.Stdout, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "core-agent:", err)
@@ -155,11 +162,16 @@ func main() {
 
 // runConfig composes the six plugins from cfg, drives one REPL session on
 // in/out, and unloads everything before returning. Egress is open; credential
-// references in request headers are resolved from the host environment, so a
-// guest holds `env:NAME` and never a secret.
+// references in request headers are resolved through the session's credential
+// resolver (the auth store or the host environment), so a guest holds a
+// reference and never a secret.
 func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConfig) error {
 	if cfg.nick == "" {
-		cfg.nick = DefaultNick
+		cfg.nick = config.DefaultNick
+	}
+	resolve := cfg.credentials
+	if resolve == nil {
+		resolve = os.LookupEnv
 	}
 
 	bus := notifications.New()
@@ -168,7 +180,7 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	// scoped to one turn cannot answer for the next.
 	callGate := &sync.Mutex{}
 	engine, err := wasm.NewEngine(ctx,
-		wasm.WithHTTPCredentialResolver(os.LookupEnv),
+		wasm.WithHTTPCredentialResolver(resolve),
 		wasm.WithHostServices(busServices{bus: bus, manager: manager}),
 	)
 	if err != nil {
