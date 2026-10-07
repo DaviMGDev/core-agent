@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -15,6 +16,7 @@ import (
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	contextmanager "github.com/DaviMGDev/core-agent/plugins/context-manager"
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
+	"github.com/DaviMGDev/core-agent/plugins/notifications"
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
 	replchat "github.com/DaviMGDev/core-agent/plugins/repl-chat"
 	spc "github.com/DaviMGDev/memento/context"
@@ -25,6 +27,7 @@ import (
 type systemSession struct {
 	in      *io.PipeWriter
 	out     *safeBuffer
+	bus     *notifications.Bus
 	done    chan error
 	settled bool
 	doneErr error
@@ -32,8 +35,8 @@ type systemSession struct {
 
 func startSystem(nick string) *systemSession {
 	pr, pw := io.Pipe()
-	s := &systemSession{in: pw, out: &safeBuffer{}, done: make(chan error, 1)}
-	go func() { s.done <- runHostSystem(pr, s.out, nick) }()
+	s := &systemSession{in: pw, out: &safeBuffer{}, bus: notifications.New(), done: make(chan error, 1)}
+	go func() { s.done <- runHostSystem(pr, s.out, nick, s.bus) }()
 	return s
 }
 
@@ -147,6 +150,8 @@ func registerSystemSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the session ends cleanly$`, stepEndsCleanly)
 	sc.Step(`^unload runs the repl-chat inverse$`, stepUnloadInverse)
 	sc.Step(`^the transcript reports "([^"]*)" on unload$`, stepTranscriptContains)
+	sc.Step(`^a chat\.message is published with "([^"]*)"$`, stepPublishChatMessage)
+	sc.Step(`^the transcript renders "([^"]*)"$`, stepTranscriptContains)
 	sc.Step(`^every fiber is removed$`, stepEveryFiberRemoved)
 	sc.Step(`^each plugin runs its effect inverse$`, stepEffectInverses)
 	sc.Step(`^no fiber remains in the registry$`, stepNoFiber)
@@ -241,6 +246,18 @@ func stepRunningExhausted(ctx context.Context) error {
 		return err
 	}
 	_ = worldFrom(ctx).sys.in.Close()
+	return nil
+}
+
+// stepPublishChatMessage publishes one unprompted chat.message while the
+// session waits for input.
+func stepPublishChatMessage(ctx context.Context, text string) error {
+	w := worldFrom(ctx)
+	payload, err := json.Marshal(replchat.Message{Text: text})
+	if err != nil {
+		return err
+	}
+	w.sys.bus.Publish(notifications.TopicChatMessage, payload)
 	return nil
 }
 
@@ -494,11 +511,76 @@ func (c *hostComponent) Activate(inst *rt.Instance, _ any) error {
 	return c.activate(inst)
 }
 
+// fixtureTerminal is the terminal as the fixture composes it: the host drives
+// the session loop and the guest-shaped handler serves one wake at a time,
+// serialized by a mutex that stands in for the guest's module lock.
+type fixtureTerminal struct {
+	mu   sync.Mutex
+	emit func(string)
+	turn func(line string) (agent.TurnResult, error)
+}
+
+func (t *fixtureTerminal) handle(wake replchat.Wake) replchat.Answer {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch {
+	case wake.Line != "":
+		if _, err := t.turn(wake.Line); err != nil {
+			return replchat.Answer{Error: err.Error()}
+		}
+	case len(wake.Events) > 0:
+		for _, line := range replchat.Render(wake.Events) {
+			t.emit(line + "\n")
+		}
+	}
+	return replchat.Answer{}
+}
+
+// fixtureTerminalWaker routes one bus wake to the terminal handler.
+type fixtureTerminalWaker struct{ term *fixtureTerminal }
+
+func (w fixtureTerminalWaker) Wake(sub *notifications.Subscription) {
+	busEvents := sub.Take()
+	wake := replchat.Wake{Events: make([]replchat.Event, 0, len(busEvents))}
+	for _, e := range busEvents {
+		wake.Events = append(wake.Events, replchat.Event{Topic: e.Topic, Payload: json.RawMessage(e.Payload)})
+	}
+	_ = w.term.handle(wake)
+}
+
+// waitActive waits until every fixture fiber has activated.
+func waitActive(sched *rt.Scheduler, fibers []spc.FiberID) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		active := 0
+		for _, id := range fibers {
+			info, ok := sched.Inspect(id)
+			if !ok {
+				return fmt.Errorf("fiber %d disappeared during startup", id)
+			}
+			if info.State == rt.StateFailed {
+				return fmt.Errorf("fiber %d failed: %w", id, info.Err)
+			}
+			if info.State == rt.StateActive {
+				active++
+			}
+		}
+		if active == len(fibers) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("timed out waiting for activation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // runHostSystem composes the six plugins at the host level over one shared
-// key registry and hosts one session: the same declarations, transcript, and
+// key registry and drives one session: the same declarations, transcript, and
 // pipeline as cmd/core-agent, with the wasm ABI path exercised separately by
-// that entry's end-to-end test.
-func runHostSystem(in io.Reader, out io.Writer, nick string) error {
+// that entry's end-to-end test. The terminal handler renders the chat.message
+// wakes the host routes to it.
+func runHostSystem(in io.Reader, out io.Writer, nick string, bus *notifications.Bus) error {
 	if nick == "" {
 		nick = "agent"
 	}
@@ -515,7 +597,14 @@ func runHostSystem(in io.Reader, out io.Writer, nick string) error {
 	providers := providermanager.NewRegistry()
 	models := modelmanager.NewRegistry()
 	store := chathistory.NewStore()
-	budget := contextmanager.DefaultBudget
+	contextCfg, err := contextmanager.ParseConfig([]byte(sysContextConfig))
+	if err != nil {
+		return err
+	}
+	budget := contextCfg.Budget
+	if budget == 0 {
+		budget = contextmanager.DefaultBudget
+	}
 
 	bind := func(inst *rt.Instance, k spc.Key[any], v string) error {
 		return rt.Bind(inst, k, any([]byte(v)))
@@ -599,14 +688,6 @@ func runHostSystem(in io.Reader, out io.Writer, nick string) error {
 	if err := add(&hostComponent{
 		decls: rt.Declarations{Provide: []spc.AnyKey{contextKey}, Inject: []spc.AnyKey{historyKey}},
 		activate: func(inst *rt.Instance) error {
-			cfg, err := contextmanager.ParseConfig([]byte(sysContextConfig))
-			if err != nil {
-				return err
-			}
-			budget = cfg.Budget
-			if budget == 0 {
-				budget = contextmanager.DefaultBudget
-			}
 			if err := bind(inst, contextKey, sysContextConfig); err != nil {
 				return err
 			}
@@ -642,90 +723,95 @@ func runHostSystem(in io.Reader, out io.Writer, nick string) error {
 		return err
 	}
 
+	runTurn := func(line string) (agent.TurnResult, error) {
+		return agent.RunTurn(agentCfg, line, agent.Deps{
+			Append: func(role, text string) error {
+				_, err := store.Append("main", role, text)
+				return err
+			},
+			Recent: func(n int) ([]agent.Message, error) {
+				recent := store.Recent("main", n)
+				out := make([]agent.Message, 0, len(recent))
+				for _, m := range recent {
+					out = append(out, agent.Message{Role: m.Role, Text: m.Text})
+				}
+				return out, nil
+			},
+			Project: func(msgs []agent.Message) ([]agent.Message, error) {
+				window := make([]contextmanager.Message, 0, len(msgs))
+				for _, m := range msgs {
+					window = append(window, contextmanager.Message{Role: m.Role, Text: m.Text})
+				}
+				projected := contextmanager.Project(window, budget)
+				out := make([]agent.Message, 0, len(projected.Messages))
+				for _, m := range projected.Messages {
+					out = append(out, agent.Message{Role: m.Role, Text: m.Text})
+				}
+				return out, nil
+			},
+			Respond: func(text string, context []agent.Message, tools []agent.Tool) (agent.Answer, error) {
+				contextMessages := make([]modelmanager.ContextMessage, 0, len(context))
+				for _, m := range context {
+					contextMessages = append(contextMessages, modelmanager.ContextMessage{Role: m.Role, Text: m.Text})
+				}
+				res, err := modelmanager.Apply(models, modelmanager.Op{
+					Kind: "respond", Model: agentCfg.Model, Text: text, Context: contextMessages,
+				}, modelmanager.MockCaller{})
+				if err != nil {
+					return agent.Answer{}, err
+				}
+				return agent.ParseAnswer(res.Text), nil
+			},
+			StartJob: func(tool string, args json.RawMessage) (string, error) {
+				return "", errors.New("the host fixture composes no tool manager")
+			},
+			Publish: func(text string) error {
+				payload, err := json.Marshal(replchat.Message{Text: text})
+				if err != nil {
+					return err
+				}
+				bus.Publish(notifications.TopicChatMessage, payload)
+				return nil
+			},
+		})
+	}
+	term := &fixtureTerminal{emit: emit, turn: runTurn}
+
 	if err := add(&hostComponent{
 		decls: rt.Declarations{
 			Provide: []spc.AnyKey{replKey},
 			Inject:  []spc.AnyKey{agentKey},
 		},
 		activate: func(inst *rt.Instance) error {
-			session := replchat.New(nick)
-			if err := bind(inst, replKey, session.Nick()); err != nil {
+			if err := bind(inst, replKey, replchat.New(nick).Nick()); err != nil {
 				return err
 			}
-			if err := effectLog(inst, "repl: session closed\n"); err != nil {
-				return err
-			}
-			return session.Run(in, emit, func(line string) (string, error) {
-				res, err := agent.RunTurn(agentCfg, line, agent.Deps{
-					Append: func(role, text string) error {
-						_, err := store.Append("main", role, text)
-						return err
-					},
-					Recent: func(n int) ([]agent.Message, error) {
-						recent := store.Recent("main", n)
-						out := make([]agent.Message, 0, len(recent))
-						for _, m := range recent {
-							out = append(out, agent.Message{Role: m.Role, Text: m.Text})
-						}
-						return out, nil
-					},
-					Project: func(msgs []agent.Message) ([]agent.Message, error) {
-						window := make([]contextmanager.Message, 0, len(msgs))
-						for _, m := range msgs {
-							window = append(window, contextmanager.Message{Role: m.Role, Text: m.Text})
-						}
-						projected := contextmanager.Project(window, budget)
-						out := make([]agent.Message, 0, len(projected.Messages))
-						for _, m := range projected.Messages {
-							out = append(out, agent.Message{Role: m.Role, Text: m.Text})
-						}
-						return out, nil
-					},
-					Respond: func(text string, context []agent.Message, tools []agent.Tool) (agent.Answer, error) {
-						contextMessages := make([]modelmanager.ContextMessage, 0, len(context))
-						for _, m := range context {
-							contextMessages = append(contextMessages, modelmanager.ContextMessage{Role: m.Role, Text: m.Text})
-						}
-						res, err := modelmanager.Apply(models, modelmanager.Op{
-							Kind: "respond", Model: agentCfg.Model, Text: text, Context: contextMessages,
-						}, modelmanager.MockCaller{})
-						if err != nil {
-							return agent.Answer{}, err
-						}
-						return agent.ParseAnswer(res.Text), nil
-					},
-					StartJob: func(tool string, args json.RawMessage) (string, error) {
-						return "", errors.New("the host fixture composes no tool manager")
-					},
-					Publish: func(text string) error { return nil },
-				})
-				if err != nil {
-					return "", err
-				}
-				return res.Text, nil
-			})
+			return effectLog(inst, "repl: session closed\n")
 		},
 	}); err != nil {
 		return err
 	}
 
-	// The REPL's activation hosts the session; it settles when the input ends.
-	repl := fibers[len(fibers)-1]
-	for {
-		done := false
-		for _, id := range fibers {
-			if info, ok := sched.Inspect(id); ok && info.State == rt.StateFailed {
-				return fmt.Errorf("fiber %d failed: %w", id, info.Err)
-			}
-		}
-		if info, ok := sched.Inspect(repl); ok && info.State == rt.StateActive {
-			done = true
-		}
-		if done {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	if err := waitActive(sched, fibers); err != nil {
+		return err
 	}
+
+	// The host drives the session loop; the terminal is woken for every
+	// chat.message, and the driver waits for the wake to drain before the
+	// next prompt so the transcript stays ordered.
+	sub := bus.Subscribe(notifications.TopicChatMessage, fixtureTerminalWaker{term: term})
+	session := replchat.New(nick)
+	if err := session.Run(in, emit, func(line string) (string, error) {
+		answer := term.handle(replchat.Wake{Line: line})
+		if answer.Error != "" {
+			return "", errors.New(answer.Error)
+		}
+		sub.WaitIdle()
+		return "", nil
+	}); err != nil {
+		return err
+	}
+	sub.WaitIdle()
 
 	for i := len(fibers) - 1; i >= 0; i-- {
 		if err := sched.Remove(fibers[i]); err != nil {

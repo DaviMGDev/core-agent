@@ -34,6 +34,13 @@ Feature: The REPL session
       Then the session ends
       And unload runs the repl-chat inverse
 
+  Rule: Unprompted messages
+
+    Scenario: A message published while the terminal waits is rendered
+      Given a running session
+      When a chat.message is published with "job 7 finished"
+      Then the transcript renders "job 7 finished"
+
   Rule: Session end variants
 
     Scenario: End of input ends the session
