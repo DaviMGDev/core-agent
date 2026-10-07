@@ -56,6 +56,7 @@ type Manager struct {
 	mu          sync.Mutex
 	registry    *Registry
 	jobs        map[string]*Job
+	order       []*Job
 	seq         uint64
 	defaultTick time.Duration
 	publisher   Publisher
@@ -111,6 +112,7 @@ func (m *Manager) start(tool string, args json.RawMessage, tick time.Duration, c
 		job.tick = m.defaultTick
 	}
 	m.jobs[job.id] = job
+	m.order = append(m.order, job)
 	closed := m.closed
 	m.mu.Unlock()
 
@@ -232,6 +234,13 @@ func (m *Manager) Job(id string) (*Job, bool) {
 	defer m.mu.Unlock()
 	j, ok := m.jobs[id]
 	return j, ok
+}
+
+// Jobs lists every job in creation order.
+func (m *Manager) Jobs() []*Job {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*Job(nil), m.order...)
 }
 
 // Attribute records that a job is executing on a caller instance, so the
