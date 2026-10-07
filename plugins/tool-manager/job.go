@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"github.com/DaviMGDev/memento/runtime"
 )
 
 // State is a job's life stage: queued, running, done, failed, or killed.
@@ -34,10 +36,36 @@ type Job struct {
 	err       string
 	output    outputBuffer
 	cancel    context.CancelFunc
+	caller    *runtime.Instance
 	parent    *Job
 	children  []*Job
 	done      chan struct{}
 	reclaimed bool
+}
+
+// Caller returns the instance the job was started from, when it came through
+// the guest job import; host-started jobs have none.
+func (j *Job) Caller() *runtime.Instance {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.caller
+}
+
+// Depth returns the job's depth in the tree: a root job is 1, and a child is
+// one deeper than its parent.
+func (j *Job) Depth() int {
+	depth := 1
+	cur := j
+	for {
+		cur.mu.Lock()
+		parent := cur.parent
+		cur.mu.Unlock()
+		if parent == nil {
+			return depth
+		}
+		depth++
+		cur = parent
+	}
 }
 
 // ID returns the job's identity.
@@ -136,10 +164,13 @@ func (j *Job) markKilled(reason string) bool {
 	return true
 }
 
-// adopt records a parent-child edge for the job tree.
+// adopt records a parent-child edge for the job tree. Each job's fields are
+// written under that job's own lock.
 func (j *Job) adopt(child *Job) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
+	child.mu.Lock()
 	child.parent = j
+	child.mu.Unlock()
+	j.mu.Lock()
 	j.children = append(j.children, child)
+	j.mu.Unlock()
 }

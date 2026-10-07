@@ -18,6 +18,28 @@ type Publisher interface {
 	Publish(topic string, payload []byte)
 }
 
+// Event is one job event delivered to a parent's listener.
+type Event struct {
+	Topic   string
+	Payload []byte
+}
+
+// jobListener is one parent's event channel.
+type jobListener struct {
+	events chan Event
+	done   chan struct{}
+}
+
+// send delivers one event, or gives up when the listener is released. A full
+// buffer blocks the emitter: the parent is expected to drain its children's
+// events.
+func (l *jobListener) send(ev Event) {
+	select {
+	case l.events <- ev:
+	case <-l.done:
+	}
+}
+
 // Options configure a Manager.
 type Options struct {
 	// DefaultTick is the tick interval for jobs that do not name one.
@@ -38,6 +60,7 @@ type Manager struct {
 	defaultTick time.Duration
 	publisher   Publisher
 	callers     map[*runtime.Instance]*Job
+	listeners   map[*Job]*jobListener
 	closed      bool
 	wg          sync.WaitGroup
 }
@@ -54,6 +77,7 @@ func New(opts Options) *Manager {
 		defaultTick: tick,
 		publisher:   opts.Publisher,
 		callers:     make(map[*runtime.Instance]*Job),
+		listeners:   make(map[*Job]*jobListener),
 	}
 }
 
@@ -64,14 +88,22 @@ func (m *Manager) Registry() *Registry { return m.registry }
 // tool is refused as a job that fails immediately with the reason; the call
 // itself always returns a job.
 func (m *Manager) Start(tool string, args json.RawMessage, tick time.Duration) *Job {
+	return m.start(tool, args, tick, nil, nil)
+}
+
+// start creates one job, adopts it under parent when given, and launches its
+// runner. Adoption happens before the runner starts, so the job's first
+// event already routes to its parent.
+func (m *Manager) start(tool string, args json.RawMessage, tick time.Duration, caller *runtime.Instance, parent *Job) *Job {
 	m.mu.Lock()
 	m.seq++
 	job := &Job{
-		id:    fmt.Sprintf("job-%d", m.seq),
-		tool:  tool,
-		args:  args,
-		state: StateQueued,
-		done:  make(chan struct{}),
+		id:     fmt.Sprintf("job-%d", m.seq),
+		tool:   tool,
+		args:   args,
+		state:  StateQueued,
+		caller: caller,
+		done:   make(chan struct{}),
 	}
 	if tick > 0 {
 		job.tick = tick
@@ -82,6 +114,9 @@ func (m *Manager) Start(tool string, args json.RawMessage, tick time.Duration) *
 	closed := m.closed
 	m.mu.Unlock()
 
+	if parent != nil && parent != job {
+		parent.adopt(job)
+	}
 	if closed {
 		m.refuse(job, "tool manager closed")
 		return job
@@ -92,7 +127,7 @@ func (m *Manager) Start(tool string, args json.RawMessage, tick time.Duration) *
 		return job
 	}
 
-	m.emit(notifications.TopicJobStarted, map[string]any{"job": job.id, "tool": job.tool})
+	m.emitJob(job, notifications.TopicJobStarted, map[string]any{"job": job.id, "tool": job.tool})
 	job.setRunning()
 	m.wg.Add(1)
 	go m.run(job, t)
@@ -107,8 +142,8 @@ func (m *Manager) refuse(job *Job, reason string) {
 	job.err = reason
 	job.mu.Unlock()
 	close(job.done)
-	m.emit(notifications.TopicJobStarted, map[string]any{"job": job.id, "tool": job.tool})
-	m.emit(notifications.TopicJobFailed, map[string]any{"job": job.id, "error": reason})
+	m.emitJob(job, notifications.TopicJobStarted, map[string]any{"job": job.id, "tool": job.tool})
+	m.emitJob(job, notifications.TopicJobFailed, map[string]any{"job": job.id, "error": reason})
 }
 
 // run executes one job: it starts the tick loop, calls the runner, and
@@ -140,9 +175,9 @@ func (m *Manager) run(job *Job, t Tool) {
 	}
 	switch state {
 	case StateDone:
-		m.emit(notifications.TopicJobCompleted, map[string]any{"job": job.id, "result": result})
+		m.emitJob(job, notifications.TopicJobCompleted, map[string]any{"job": job.id, "result": result})
 	case StateFailed:
-		m.emit(notifications.TopicJobFailed, map[string]any{"job": job.id, "error": err.Error()})
+		m.emitJob(job, notifications.TopicJobFailed, map[string]any{"job": job.id, "error": err.Error()})
 	}
 	close(job.done)
 }
@@ -164,7 +199,7 @@ func (m *Manager) tickLoop(ctx context.Context, job *Job, done <-chan struct{}) 
 			job.lastTick = now
 			elapsed := now.Sub(job.started)
 			job.mu.Unlock()
-			m.emit(notifications.TopicJobTick, map[string]any{"job": job.id, "elapsed_ms": elapsed.Milliseconds()})
+			m.emitJob(job, notifications.TopicJobTick, map[string]any{"job": job.id, "elapsed_ms": elapsed.Milliseconds()})
 		}
 	}
 }
@@ -173,7 +208,7 @@ func (m *Manager) tickLoop(ctx context.Context, job *Job, done <-chan struct{}) 
 // unwinds at the next safe point, and killing a job kills its descendants.
 func (m *Manager) Kill(job *Job) Status {
 	if job.markKilled("killed") {
-		m.emit(notifications.TopicJobKilled, map[string]any{"job": job.id})
+		m.emitJob(job, notifications.TopicJobKilled, map[string]any{"job": job.id})
 		m.killDescendants(job)
 	}
 	return job.Peep()
@@ -242,16 +277,54 @@ func (m *Manager) Close() {
 	m.wg.Wait()
 }
 
-// emit publishes one event document when a bus is configured.
-func (m *Manager) emit(topic string, payload any) {
-	if m.publisher == nil {
-		return
-	}
+// emitJob publishes one job event. A job with a parent delivers to the
+// parent's listener — the parent is the sole listener to its child's subtree
+// events — while a root job publishes on the bus. An event with a parent but
+// no listener is dropped: nobody else may see it.
+func (m *Manager) emitJob(job *Job, topic string, payload any) {
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
+	job.mu.Lock()
+	parent := job.parent
+	job.mu.Unlock()
+	m.mu.Lock()
+	listener := m.listeners[parent]
+	m.mu.Unlock()
+	if listener != nil {
+		listener.send(Event{Topic: topic, Payload: b})
+		return
+	}
+	if parent != nil || m.publisher == nil {
+		return
+	}
 	m.publisher.Publish(topic, b)
+}
+
+// Listen returns a channel receiving the events of job's direct children:
+// ticks, completions, failures, and kills. Unlisten releases it; a send that
+// races the release is dropped.
+func (m *Manager) Listen(job *Job) <-chan Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if l, ok := m.listeners[job]; ok {
+		return l.events
+	}
+	l := &jobListener{events: make(chan Event, 64), done: make(chan struct{})}
+	m.listeners[job] = l
+	return l.events
+}
+
+// Unlisten releases a listener registered with Listen.
+func (m *Manager) Unlisten(job *Job) {
+	m.mu.Lock()
+	l := m.listeners[job]
+	delete(m.listeners, job)
+	m.mu.Unlock()
+	if l != nil {
+		close(l.done)
+	}
 }
 
 // --- the loader's host-services contract ---
@@ -282,7 +355,8 @@ type statusDoc struct {
 
 // StartJob implements the loader's job-start import: one request document in,
 // one handle document stashed. It returns as soon as the job has a handle and
-// never waits for the call to finish.
+// never waits for the call to finish. A job started while the caller's
+// instance is attributed to a parent job is adopted into that job's subtree.
 func (m *Manager) StartJob(caller *runtime.Instance, req []byte) ([]byte, error) {
 	var r startRequest
 	if err := json.Unmarshal(req, &r); err != nil {
@@ -291,7 +365,10 @@ func (m *Manager) StartJob(caller *runtime.Instance, req []byte) ([]byte, error)
 	if r.Tool == "" {
 		return nil, errors.New("job start: tool is required")
 	}
-	job := m.Start(r.Tool, r.Args, time.Duration(r.TickMS)*time.Millisecond)
+	m.mu.Lock()
+	parent := m.callers[caller]
+	m.mu.Unlock()
+	job := m.start(r.Tool, r.Args, time.Duration(r.TickMS)*time.Millisecond, caller, parent)
 	return json.Marshal(jobRef{Job: job.ID()})
 }
 

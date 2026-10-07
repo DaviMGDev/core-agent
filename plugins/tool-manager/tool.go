@@ -43,6 +43,15 @@ func (o *Output) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// Job returns the job this output belongs to: the runner's own handle, for
+// the tree, the caller attribution, and the parent listener.
+func (o *Output) Job() *Job {
+	if o == nil {
+		return nil
+	}
+	return o.job
+}
+
 // Registry holds the callable tools. A duplicate name is refused and the
 // registry stays unchanged, the same discipline the kernel uses for keys.
 type Registry struct {

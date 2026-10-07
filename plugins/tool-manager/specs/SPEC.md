@@ -33,6 +33,10 @@ injects it together with the notification bus.
   descendants. A terminal job is left as it is.
 - `Close` reclaims every job: runners are cancelled and their jobs land
   failed with "tool manager closed". Reclamation is not a kill.
+- A job carries its caller: the instance the guest import ran on, when it
+  came through `job_start`. `Depth` walks the tree (a root job is 1).
+- A job started while the caller's instance is attributed to a parent job is
+  adopted into that job's subtree, before its runner starts.
 
 ## Jobs
 
@@ -43,9 +47,14 @@ Output is write-through: what the runner writes, peep returns mid-run.
 
 ## Events
 
-The manager publishes job events on the bus topics: `job.started` with the
-job and tool, `job.tick` with elapsed, `job.completed` with the result,
-`job.failed` with the error, and `job.killed`. A reclaimed job emits nothing.
+A job event carries the job: `job.started` with the job and tool,
+`job.tick` with elapsed, `job.completed` with the result, `job.failed` with
+the error, and `job.killed`. A reclaimed job emits nothing.
+
+Routing follows the tree: a job with a parent delivers its events to the
+parent's listener (`Listen`/`Unlisten`) and never to the bus — the parent is
+the sole listener to its child's subtree events — while a root job publishes
+on the bus. An event whose parent has no listener is dropped.
 
 ## Conformance
 
@@ -72,3 +81,9 @@ cross-process tools.
   without kill semantics or events; a late runner return cannot resurrect the
   job.
 - **TM5 — Ticks are nudges.** A tick reports elapsed time, never liveness.
+- **TM6 — The tree is the routing table.** Adoption happens at start, before
+  the runner runs, so a child's first event already routes to its parent; no
+  filter over a global topic can leak a subtree to another agent.
+- **TM7 — Attribution is per call.** `Attribute`/`Release` name the job an
+  instance is executing for; the caller's cancellation poll answers for it,
+  and jobs it starts are adopted under it.

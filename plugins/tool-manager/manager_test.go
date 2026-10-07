@@ -9,15 +9,16 @@ import (
 	"time"
 
 	"github.com/DaviMGDev/core-agent/plugins/notifications"
+	"github.com/DaviMGDev/memento/runtime"
 )
 
 // recorder is a Publisher that records events for tests.
 type recorder struct {
 	mu     sync.Mutex
-	events []Event
+	events []recEvent
 }
 
-type Event struct {
+type recEvent struct {
 	Topic   string
 	Payload map[string]any
 }
@@ -27,7 +28,7 @@ func (r *recorder) Publish(topic string, payload []byte) {
 	_ = json.Unmarshal(payload, &doc)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.events = append(r.events, Event{Topic: topic, Payload: doc})
+	r.events = append(r.events, recEvent{Topic: topic, Payload: doc})
 }
 
 func (r *recorder) count(topic string) int {
@@ -159,6 +160,119 @@ func TestCloseBeforeRunnerStartsReclaims(t *testing.T) {
 	m.Close() // may race the runner goroutine
 	if st := m.Peep(job); st.State != StateFailed {
 		t.Fatalf("state after close = %s, want failed", st.State)
+	}
+}
+
+// instanceCapture records the instance the scheduler activates it on, so a
+// host test can speak for a guest caller.
+type instanceCapture struct {
+	inst  *runtime.Instance
+	ready chan struct{}
+}
+
+func (c *instanceCapture) Declarations() runtime.Declarations { return runtime.Declarations{} }
+func (c *instanceCapture) Activate(inst *runtime.Instance, _ any) error {
+	c.inst = inst
+	close(c.ready)
+	return nil
+}
+
+func captureInstance(t *testing.T) *runtime.Instance {
+	t.Helper()
+	c := &instanceCapture{ready: make(chan struct{})}
+	s := runtime.New()
+	t.Cleanup(func() { _ = s.Close() })
+	if _, err := s.Insert(c, nil); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	select {
+	case <-c.ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("capture component did not activate")
+	}
+	return c.inst
+}
+
+func TestStartJobAdoptsUnderTheAttributedParent(t *testing.T) {
+	m := New(Options{})
+	release := make(chan struct{})
+	defer close(release)
+	if err := m.Registry().Declare(Tool{Name: "slow", Run: blocking(release)}); err != nil {
+		t.Fatalf("Declare slow: %v", err)
+	}
+	inst := captureInstance(t)
+
+	parent := m.Start("slow", nil, 0)
+	m.Attribute(inst, parent)
+	defer m.Release(inst)
+
+	raw, err := m.StartJob(inst, []byte(`{"tool":"slow"}`))
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	var handle struct {
+		Job string `json:"job"`
+	}
+	if err := json.Unmarshal(raw, &handle); err != nil {
+		t.Fatalf("handle = %q: %v", raw, err)
+	}
+	child, ok := m.Job(handle.Job)
+	if !ok {
+		t.Fatalf("job %q not found", handle.Job)
+	}
+	if child.Depth() != 2 {
+		t.Fatalf("child depth = %d, want 2", child.Depth())
+	}
+	if child.Caller() != inst {
+		t.Fatal("child caller is not the attributed instance")
+	}
+
+	m.Kill(parent)
+	if st := child.Wait(); st.State != StateKilled {
+		t.Fatalf("child after parent kill = %s, want killed", st.State)
+	}
+}
+
+func TestChildEventsGoToTheParentListener(t *testing.T) {
+	rec := &recorder{}
+	m := New(Options{Publisher: rec})
+	release := make(chan struct{})
+	defer close(release)
+	if err := m.Registry().Declare(Tool{Name: "slow", Run: blocking(release)}); err != nil {
+		t.Fatalf("Declare slow: %v", err)
+	}
+	if err := m.Registry().Declare(Tool{Name: "echo", Run: func(context.Context, json.RawMessage, *Output) (any, error) {
+		return "hi", nil
+	}}); err != nil {
+		t.Fatalf("Declare echo: %v", err)
+	}
+
+	parent := m.Start("slow", nil, 0)
+	events := m.Listen(parent)
+	defer m.Unlisten(parent)
+
+	child := m.start("echo", nil, 0, nil, parent)
+	var topics []string
+	deadline := time.Now().Add(3 * time.Second)
+	for len(topics) < 2 && time.Now().Before(deadline) {
+		select {
+		case ev := <-events:
+			topics = append(topics, ev.Topic)
+		case <-time.After(3 * time.Second):
+		}
+	}
+	want := []string{notifications.TopicJobStarted, notifications.TopicJobCompleted}
+	if len(topics) != 2 || topics[0] != want[0] || topics[1] != want[1] {
+		t.Fatalf("listener topics = %v, want %v", topics, want)
+	}
+	if rec.count(notifications.TopicJobStarted) != 1 {
+		t.Fatalf("bus job.started = %d, want only the root job's", rec.count(notifications.TopicJobStarted))
+	}
+	if rec.count(notifications.TopicJobCompleted) != 0 {
+		t.Fatalf("bus job.completed = %d, want the child's event to stay with the parent", rec.count(notifications.TopicJobCompleted))
+	}
+	if child.State() != StateDone {
+		t.Fatalf("child = %s, want done", child.State())
 	}
 }
 
