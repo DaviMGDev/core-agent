@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
 	"github.com/DaviMGDev/core-agent/plugins/subagent"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
+	"github.com/DaviMGDev/memento/runtime"
 )
 
 // subWake is the agent request the subagent runner sends.
@@ -33,10 +35,14 @@ type subEvent struct {
 // fakeSubAgent is the agent-loop surface a subagent scenario calls: it records
 // the wakes it receives and answers from a script.
 type fakeSubAgent struct {
-	mu     sync.Mutex
-	wakes  []subWake
-	answer func(w subWake) (text, job string)
-	block  chan struct{}
+	mu       sync.Mutex
+	wakes    []subWake
+	answer   func(w subWake) (text, job string)
+	block    chan struct{}
+	recurse  bool
+	inst     *runtime.Instance
+	manager  *toolmanager.Manager
+	children []string
 }
 
 func (a *fakeSubAgent) Handle(ctx context.Context, req []byte) ([]byte, error) {
@@ -53,6 +59,22 @@ func (a *fakeSubAgent) Handle(ctx context.Context, req []byte) ([]byte, error) {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if a.recurse && len(w.Events) == 0 && w.Line != "" && a.inst != nil && a.manager != nil {
+		raw, err := a.manager.StartJob(a.inst, []byte(`{"tool":"subagent","args":{"brief":"recurse"}}`))
+		if err != nil {
+			return nil, err
+		}
+		var handle struct {
+			Job string `json:"job"`
+		}
+		if err := json.Unmarshal(raw, &handle); err != nil {
+			return nil, err
+		}
+		a.mu.Lock()
+		a.children = append(a.children, handle.Job)
+		a.mu.Unlock()
+		return json.Marshal(map[string]any{"job": handle.Job})
 	}
 	text, job := "", ""
 	if a.answer != nil {
@@ -81,6 +103,15 @@ func (a *fakeSubAgent) snapshot() []subWake {
 	return append([]subWake(nil), a.wakes...)
 }
 
+func (a *fakeSubAgent) lastChild() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.children) == 0 {
+		return ""
+	}
+	return a.children[len(a.children)-1]
+}
+
 func registerSubagentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a manager with a subagent tool$`, stepManagerSubagentTool)
 	sc.Step(`^a manager with a blocking subagent tool$`, stepManagerBlockingSubagentTool)
@@ -99,6 +130,9 @@ func registerSubagentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a manager with a subagent tool resolving models$`, stepManagerSubagentResolving)
 	sc.Step(`^a subagent is started with the brief "([^"]*)" on model "([^"]*)"$`, stepStartSubagentModel)
 	sc.Step(`^the child's wake names the model "([^"]*)"$`, stepChildWakeModel)
+	sc.Step(`^a manager with a recursing subagent tool$`, stepManagerRecursingSubagent)
+	sc.Step(`^the subagent chain is started$`, stepStartSubagentChain)
+	sc.Step(`^the innermost job fails with a depth reason$`, stepInnermostDepthFailure)
 }
 
 // newSubagentWorld wires a manager with the subagent tool over the fake agent.
@@ -252,6 +286,95 @@ func stepChildWakeModel(ctx context.Context, model string) error {
 		return fmt.Errorf("child's model = %q, want %q", cfg.Model, model)
 	}
 	return nil
+}
+
+// instCapture records the instance the scheduler activates it on, so a
+// subagent scenario can speak for a guest caller.
+type instCapture struct {
+	inst  *runtime.Instance
+	ready chan struct{}
+}
+
+func (c *instCapture) Declarations() runtime.Declarations { return runtime.Declarations{} }
+func (c *instCapture) Activate(inst *runtime.Instance, _ any) error {
+	c.inst = inst
+	close(c.ready)
+	return nil
+}
+
+func captureInstance() (*runtime.Instance, *runtime.Scheduler, error) {
+	c := &instCapture{ready: make(chan struct{})}
+	s := runtime.New()
+	if _, err := s.Insert(c, nil); err != nil {
+		_ = s.Close()
+		return nil, nil, err
+	}
+	select {
+	case <-c.ready:
+	case <-time.After(3 * time.Second):
+		_ = s.Close()
+		return nil, nil, errors.New("capture component did not activate")
+	}
+	return c.inst, s, nil
+}
+
+func stepManagerRecursingSubagent(ctx context.Context) error {
+	w := worldFrom(ctx)
+	newSubagentWorld(w, subagent.Options{})
+	if w.err != nil {
+		return w.err
+	}
+	inst, sched, err := captureInstance()
+	if err != nil {
+		return err
+	}
+	w.subSched = sched
+	w.subInst = inst
+	w.subAgent.inst = inst
+	w.subAgent.manager = w.subManager
+	w.subAgent.recurse = true
+	return nil
+}
+
+func stepStartSubagentChain(ctx context.Context) error {
+	w := worldFrom(ctx)
+	raw, err := w.subManager.StartJob(w.subInst, []byte(`{"tool":"subagent","args":{"brief":"recurse"}}`))
+	if err != nil {
+		return err
+	}
+	var handle struct {
+		Job string `json:"job"`
+	}
+	if err := json.Unmarshal(raw, &handle); err != nil {
+		return err
+	}
+	job, ok := w.subManager.Job(handle.Job)
+	if !ok {
+		return fmt.Errorf("chain root %q not found", handle.Job)
+	}
+	w.subJob = job
+	return nil
+}
+
+func stepInnermostDepthFailure(ctx context.Context) error {
+	w := worldFrom(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if id := w.subAgent.lastChild(); id != "" {
+			if job, ok := w.subManager.Job(id); ok {
+				st := job.Wait()
+				if st.State != toolmanager.StateFailed {
+					return fmt.Errorf("innermost job = %s, want failed", st.State)
+				}
+				if !strings.Contains(st.Error, "depth") {
+					return fmt.Errorf("innermost job error = %q, want a depth reason", st.Error)
+				}
+				return nil
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return errors.New("no nested subagent call was started")
 }
 
 func stepStartSubagentConversation(ctx context.Context, brief string) error {

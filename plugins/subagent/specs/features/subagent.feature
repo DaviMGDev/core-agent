@@ -65,3 +65,10 @@ Feature: Subagent — an agent callable as a tool
       Given a manager with a subagent tool resolving models
       When a subagent is started with the brief "summarize" on model "reliable"
       Then the subagent job reaches done with reply "mock(llama-3.2): summarize (context:1)"
+
+  Rule: The job tree is bounded
+
+    Scenario: A start past the depth bound fails like any failed job
+      Given a manager with a recursing subagent tool
+      When the subagent chain is started
+      Then the innermost job fails with a depth reason

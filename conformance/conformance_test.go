@@ -153,6 +153,8 @@ type world struct {
 	subManager *toolmanager.Manager
 	subJob     *toolmanager.Job
 	subBlock   chan struct{}
+	subInst    *rt.Instance
+	subSched   *rt.Scheduler
 
 	// shared
 	err error
@@ -203,6 +205,9 @@ func (w *world) close() {
 	}
 	if w.subManager != nil {
 		w.subManager.Close()
+	}
+	if w.subSched != nil {
+		_ = w.subSched.Close()
 	}
 }
 
