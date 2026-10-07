@@ -35,14 +35,16 @@ type subEvent struct {
 // fakeSubAgent is the agent-loop surface a subagent scenario calls: it records
 // the wakes it receives and answers from a script.
 type fakeSubAgent struct {
-	mu       sync.Mutex
-	wakes    []subWake
-	answer   func(w subWake) (text, job string)
-	block    chan struct{}
-	recurse  bool
-	inst     *runtime.Instance
-	manager  *toolmanager.Manager
-	children []string
+	mu        sync.Mutex
+	wakes     []subWake
+	answer    func(w subWake) (text, job string)
+	block     chan struct{}
+	recurse   bool
+	spawnTool string
+	spawned   bool
+	inst      *runtime.Instance
+	manager   *toolmanager.Manager
+	children  []string
 }
 
 func (a *fakeSubAgent) Handle(ctx context.Context, req []byte) ([]byte, error) {
@@ -60,8 +62,24 @@ func (a *fakeSubAgent) Handle(ctx context.Context, req []byte) ([]byte, error) {
 			return nil, ctx.Err()
 		}
 	}
+	spawn := ""
 	if a.recurse && len(w.Events) == 0 && w.Line != "" && a.inst != nil && a.manager != nil {
-		raw, err := a.manager.StartJob(a.inst, []byte(`{"tool":"subagent","args":{"brief":"recurse"}}`))
+		spawn = subagent.ToolName
+	} else if a.spawnTool != "" && !a.spawned && len(w.Events) == 0 && w.Line != "" && a.inst != nil && a.manager != nil {
+		spawn = a.spawnTool
+	}
+	if spawn != "" {
+		args, err := json.Marshal(map[string]any{"tool": spawn})
+		if err != nil {
+			return nil, err
+		}
+		if spawn == subagent.ToolName {
+			args, err = json.Marshal(map[string]any{"tool": spawn, "args": map[string]string{"brief": "recurse"}})
+			if err != nil {
+				return nil, err
+			}
+		}
+		raw, err := a.manager.StartJob(a.inst, args)
 		if err != nil {
 			return nil, err
 		}
@@ -73,6 +91,7 @@ func (a *fakeSubAgent) Handle(ctx context.Context, req []byte) ([]byte, error) {
 		}
 		a.mu.Lock()
 		a.children = append(a.children, handle.Job)
+		a.spawned = true
 		a.mu.Unlock()
 		return json.Marshal(map[string]any{"job": handle.Job})
 	}
@@ -143,6 +162,10 @@ func registerSubagentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a manager with a recursing subagent tool$`, stepManagerRecursingSubagent)
 	sc.Step(`^the subagent chain is started$`, stepStartSubagentChain)
 	sc.Step(`^the innermost job fails with a depth reason$`, stepInnermostDepthFailure)
+	sc.Step(`^a manager with a subagent tool whose child starts a job$`, stepManagerSpawnSubagent)
+	sc.Step(`^the subagent root is started with the brief "([^"]*)"$`, stepStartSubagentRoot)
+	sc.Step(`^the child's wake carries the job completion$`, stepChildWokeOnCompletion)
+	sc.Step(`^the subagent job reaches done$`, stepRootDone)
 	sc.Step(`^a manager with a parent job and a child job$`, stepManagerParentChild)
 	sc.Step(`^a manager with a running parent job and child job$`, stepManagerRunningParentChild)
 	sc.Step(`^the parent job is killed$`, stepKillParent)
@@ -437,6 +460,75 @@ func setupParentChild(w *world, childTool string) error {
 		return fmt.Errorf("child job %q not found", handle.Job)
 	}
 	w.subChild = job
+	return nil
+}
+
+func stepManagerSpawnSubagent(ctx context.Context) error {
+	w := worldFrom(ctx)
+	newSubagentWorld(w, subagent.Options{})
+	if w.err != nil {
+		return w.err
+	}
+	if err := w.subManager.Registry().Declare(toolmanager.Tool{Name: "echo", Run: func(context.Context, json.RawMessage, *toolmanager.Output) (any, error) {
+		return "hi", nil
+	}}); err != nil {
+		return err
+	}
+	inst, sched, err := captureInstance()
+	if err != nil {
+		return err
+	}
+	w.subSched, w.subInst = sched, inst
+	w.subAgent.inst = inst
+	w.subAgent.manager = w.subManager
+	w.subAgent.spawnTool = "echo"
+	return nil
+}
+
+func stepStartSubagentRoot(ctx context.Context, brief string) error {
+	w := worldFrom(ctx)
+	args, err := json.Marshal(map[string]any{"tool": subagent.ToolName, "args": map[string]string{"brief": brief}})
+	if err != nil {
+		return err
+	}
+	raw, err := w.subManager.StartJob(w.subInst, args)
+	if err != nil {
+		return err
+	}
+	var handle struct {
+		Job string `json:"job"`
+	}
+	if err := json.Unmarshal(raw, &handle); err != nil {
+		return err
+	}
+	job, ok := w.subManager.Job(handle.Job)
+	if !ok {
+		return fmt.Errorf("root job %q not found", handle.Job)
+	}
+	w.subJob = job
+	return nil
+}
+
+func stepChildWokeOnCompletion(ctx context.Context) error {
+	w := worldFrom(ctx)
+	wakes, err := waitSubWakes(w, 2)
+	if err != nil {
+		return err
+	}
+	second := wakes[1]
+	for _, ev := range second.Events {
+		if ev.Topic == "job.completed" {
+			return nil
+		}
+	}
+	return fmt.Errorf("child's second wake carries %d events, none a job completion", len(second.Events))
+}
+
+func stepRootDone(ctx context.Context) error {
+	w := worldFrom(ctx)
+	if st := w.subJob.Wait(); st.State != toolmanager.StateDone {
+		return fmt.Errorf("subagent job = %s (%s), want done", st.State, st.Error)
+	}
 	return nil
 }
 

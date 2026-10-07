@@ -17,6 +17,14 @@ Feature: Subagent — an agent callable as a tool
       When the subagent job is killed
       Then the subagent job is killed at once
 
+  Rule: The runner drives the child's turns
+
+    Scenario: A child's job completion wakes its next turn
+      Given a manager with a subagent tool whose child starts a job
+      When the subagent root is started with the brief "start a job"
+      Then the child's wake carries the job completion
+      And the subagent job reaches done
+
   Rule: The child is isolated
 
     Scenario: The child's first wake carries only the brief
