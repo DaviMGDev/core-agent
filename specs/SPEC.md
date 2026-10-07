@@ -3,9 +3,9 @@ type: spec
 title: "core-agent — System Specification"
 description: "An agent core on memento: the kernel imported as-is, every other capability a plugin composed at runtime."
 tags: [spec]
-sections: [context, users, user-stories, architecture, semantics, conformance, nfr, non-goals, decisions]
+sections: [context, users, user-stories, architecture, semantics, configuration, conformance, nfr, non-goals, decisions]
 created: "2026-10-05"
-updated: "2026-10-06"
+updated: "2026-10-07"
 ---
 
 # core-agent — System Specification
@@ -287,13 +287,60 @@ handler: chat-history `append`/`recent`, context-manager `project`,
 model-manager `resolve`/`respond`.
 
 **Configuration.** Each entry carries a payload: JSON config for the
-management plugins, a nickname string for repl-chat. The assembler provides
-defaults in `cmd/` and may override them with entries. The provider document
+management plugins, a nickname string for repl-chat. The provider document
 lists, per provider, the concrete models it serves (the model-to-endpoint
-mapping); an entry wires the loader's HTTP transport and its credential
-resolver (`env:VAR` → host environment). A provider marked `mock` needs no
-endpoint: `cmd/core-agent -mock` swaps the provider document for a single
-in-process mock serving the default views' models.
+mapping), and the entry wires the loader's HTTP transport with a credential
+resolver that reads the `.core/` auth store or the host environment. Under
+`cmd/core-agent` all payloads are resolved from `.core/` at startup (see
+Configuration), and the entry may still override knobs with flags. A provider
+marked `mock` needs no endpoint: `-mock` swaps the provider document for a
+single in-process mock serving the models the default views resolve to.
+
+## Configuration
+
+core-agent reads its configuration from `.core/` before it composes anything:
+a user scope (default `~/.core`, relocated by `CORE_DIR`) and an optional
+project scope (`./.core`), each carrying the same four files:
+
+| File | Responsibility |
+|---|---|
+| `settings.json` | entry knobs: nick, conversation, context budget, agent model view |
+| `providers.json` | the provider document (`{name, endpoint, credential, models}`) |
+| `models.json` | the model views (alias, fallback, discuss) |
+| `auth.json` | credentials by name; user scope only, mode 0600 |
+
+**Resolution.** Every file is optional. The layers apply per key, highest
+last: embedded defaults, the user files, the project files, the environment
+(`CORE_NICK`, `CORE_MODEL`, `CORE_CONTEXT_BUDGET`), then the entry's flags
+(`-nick` last). An absent file means "use the layer below". Named entries in
+`providers.json` and `models.json` merge by name: an overlay replaces a
+same-named entry and appends new ones. A project `auth.json` is ignored:
+secrets do not live in repositories. A missing credential surfaces at the
+first request that needs it, naming the provider.
+
+**Validation.** A known file must parse as JSON. A malformed file fails the
+load with an error naming that file, before any plugin activates. Unknown
+files in `.core/` and unknown keys in a known file are ignored, so the
+directory stays open to growth.
+
+**First run.** When the user directory does not exist, the entry seeds
+`settings.json`, `providers.json`, and `models.json` from the embedded
+defaults and creates `auth.json` empty with mode 0600. Seeding never
+overwrites a file that exists.
+
+**Payloads.** The merged document splits into the entries' payloads: the
+provider document to provider-manager, the model views to model-manager, the
+conversation to chat-history, the budget to context-manager, the merged agent
+knob to agent, and the nick to repl-chat. `cmd/core-agent -mock` swaps the
+provider document for a single in-process mock serving the models the default
+views resolve to.
+
+**Credentials.** A provider's `credential` field holds a reference, never a
+secret: `env:NAME` reads only the host environment, and `auth:NAME` reads the
+named credential from `auth.json`, shadowed by a same-named environment
+variable when one is set. The host resolves the reference when it substitutes
+request headers, so a guest payload carries only the reference and no secret
+enters guest memory.
 
 ## Conformance
 
@@ -412,3 +459,10 @@ host-side anymore.
   agent and every subagent. A subagent call is a manager job whose runner
   drives the child's turns; the child's conversation and context are its own,
   its speech stays private, and visibility and kill are subtree-only.
+- **D17 — Configuration lives in `.core/`.** The entry reads a user scope
+  (default `~/.core`, `CORE_DIR` relocates) and a project scope (`./.core`)
+  of the same four files, layered per key over embedded defaults
+  (defaults < user < project < env < flags). `auth.json` is user-scope only
+  and credentials stay host-side: a reference (`env:NAME`, `auth:NAME`)
+  crosses to a guest, never a secret. First run seeds the defaults and never
+  overwrites. (Charter `config.pseudo`, confirmed open questions 1–2.)

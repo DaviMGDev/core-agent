@@ -51,9 +51,30 @@ $ go run ./cmd/core-agent -mock    # in-process mock LLM: no provider, no socket
 $ go run ./cmd/core-agent          # uses the default provider document
 ```
 
-Flags: `-mock` (in-process mock LLM), `-nick <name>` (the nickname the REPL announces). A real session needs a reachable provider; credentials cross as `env:VAR` references the host substitutes, so no secret enters guest memory.
+Flags: `-mock` (in-process mock LLM), `-nick <name>` (the nickname the REPL announces). A real session needs a reachable provider; credentials cross as references the host substitutes (`env:VAR` for the environment, `auth:NAME` for the `.core/` auth store), so no secret enters guest memory.
 
 Commands: `:help`, `:quit` (aliases `:q`, `:exit`); blank lines just re-prompt. When the model calls a tool, the call runs as a job and its completion is reported back to the session unprompted.
+
+## Configuration
+
+The entry resolves its configuration from `.core/` before it composes anything — the way pi keeps its agent directory. The user scope is `~/.core`, relocated by the `CORE_DIR` environment variable; an optional project scope `./.core` layers over it. Each scope carries the same files:
+
+| File | Responsibility |
+|---|---|
+| `settings.json` | entry knobs: nick, conversation, context budget, agent model view |
+| `providers.json` | providers: name, endpoint, credential reference, served models |
+| `models.json` | model views: alias, fallback chain, discussion group |
+| `auth.json` | credentials by name, mode 0600 — user scope only |
+
+Missing files fall back to the embedded defaults. Layers apply per key, highest last: defaults < user < project < environment (`CORE_DIR`, `CORE_NICK`, `CORE_MODEL`, `CORE_CONTEXT_BUDGET`) < flags (`-nick`). Named entries in `providers.json` and `models.json` merge by name: an entry from a higher layer replaces a same-named entry and new entries append. A malformed known file fails startup naming the file; unknown files and keys are ignored. The first run seeds the user scope from the defaults and an empty `auth.json`, never overwriting a file that exists.
+
+The shipped default points the agent at ollama (`https://ollama.com/v1`) with `gemma4:cloud` behind the `fast` view. Put the key in `~/.core/auth.json`:
+
+```json
+{ "ollama": { "type": "api_key", "key": "..." } }
+```
+
+Credentials stay host-side: a provider references a credential (`auth:ollama`, or `env:VAR` for the environment), the guest payload carries only the reference, and the host substitutes the secret when it sends the request. A same-named environment variable shadows an `auth:` reference.
 
 ## Test and build
 
