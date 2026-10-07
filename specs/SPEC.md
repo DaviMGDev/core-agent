@@ -119,6 +119,29 @@ Acceptance criteria (EARS):
 - IF a behavior has no spec THE author SHALL NOT implement it. (Unwanted
   behavior)
 
+**US-005 — The agent layer**
+
+As an agent,
+I want every call to be a job, events to wake me, and subagents to be
+callable as tools,
+so that I can act, hear back, and delegate.
+
+Acceptance criteria (EARS):
+
+- WHEN a tool is called THE manager SHALL create a job (queued → running →
+  done | failed) and return a handle at once; `peep` observes it and `kill`
+  is accepted at any point, honored at the next safe point. (Event-driven)
+- WHEN a job emits an event THE bus SHALL queue it and wake its subscriber
+  without blocking the publisher; one wake SHALL carry every queued event.
+  (Event-driven)
+- WHEN the model answers with a tool call THE agent's turn SHALL end; the
+  job's completion or a tick SHALL wake the next turn. (Event-driven)
+- WHEN a subagent is called THE manager SHALL run it as a job whose child
+  works on its own conversation and model; the reply SHALL come back, and a
+  call past the depth bound SHALL fail like any failed job. (Event-driven)
+- WHEN a job emits events THE parent SHALL be the sole listener; a caller
+  SHALL see and control its own subtree only. (Ubiquitous)
+
 ## Architecture
 
 **Kernel.** memento is imported as-is: `context/` (typed keys, bindings,
@@ -134,11 +157,11 @@ contract. The guest is built with
 `GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared` and committed beside the
 plugin; the host side embeds it.
 
-Host-side plugins follow the same shape — library and `specs/` under
-`plugins/<name>/` — but are not compiled to wasm: they run in the host process
-and `cmd/core-agent` injects them into the memento engine. The tool manager
-and the notification bus are host-side; guests reach them only through the
-ABI imports.
+Host-side components follow the same shape — library and `specs/` under
+`plugins/<name>/` — but are not compiled to wasm: they run in the host
+process. The tool manager and the notification bus are injected into the
+memento engine; the subagent runner registers as a manager tool over the
+agent guest. Guests reach the host side only through the ABI imports.
 
 **Host ABI (kernel surface).** Guests export `memento_declare`,
 `memento_activate`, `memento_revert_effect`, and `memory`, and may export
@@ -168,13 +191,15 @@ memento keys:
 | repl-chat | `agent-loop` | `repl` |
 
 **Entry.** `cmd/core-agent` registers the six compiled guests, composes them
-through the scheduler (`Insert` / `Inspect` / `Remove`), drives the terminal
-session over the repl-chat library, and unloads on exit. The scheduler path
-is deliberate: an interactive session outlives the loader's five-second
-quiescence window (memento documents the pattern in `examples/chat`), and
-the session loop is host-driven — reading stdin and receiving a bus wake
-cannot both live in a serialized guest — so reconciliation stays the kernel
-mechanism for non-blocking compositions.
+through the scheduler (`Insert` / `Inspect` / `Remove`), wires the agent
+layer — the tool manager as the host job service, the subagent tool over
+the agent guest, a waker per subscriber — drives the terminal session over
+the repl-chat library, and unloads on exit (reclaiming the jobs first). The
+scheduler path is deliberate: an interactive session outlives the loader's
+five-second quiescence window (memento documents the pattern in
+`examples/chat`), and the session loop is host-driven — reading stdin and
+receiving a bus wake cannot both live in a serialized guest — so
+reconciliation stays the kernel mechanism for non-blocking compositions.
 
 **Registration.** A guest registers a provided key by binding its value during
 activation (`memento.bind`): the kernel installs the binding as a revertible
@@ -182,8 +207,9 @@ fiber effect and advertises the key once the fiber owns it. A declared
 provide left unbound fails activation. The extended ABI (bind/get/invoke)
 landed upstream in memento's `plugins/wasm`, so the entry carries no adapter.
 
-**Sources of truth.** The charter is `init.pseudo`; this spec refines it.
-Plugin specifics live in the plugin specs.
+**Sources of truth.** The charter is `agent.pseudo` (kept outside version
+control); this spec refines it. Component specifics live in the component
+specs.
 
 ## Semantics
 
@@ -212,7 +238,9 @@ appends the user turn to chat-history, reads recent turns, projects them into
 the context window, asks model-manager to respond, and records the assistant
 reply. When it speaks, the agent publishes the message as `chat.message`;
 the terminal renders the event, so a prompted reply and an unprompted
-message take the same path. model-manager resolves the view to
+message take the same path. A tool call ends the turn without a message: the
+agent starts a job and the job's completion, failure, or tick wakes the next
+turn. model-manager resolves the view to
 its concrete models, maps the chosen model to a provider through the injected
 provider registry, and performs the exchange over the loader's host-mediated
 HTTP transport; the provider's answer is the response line. A fallback view
@@ -222,6 +250,31 @@ participant, since merge orchestration is still deferred. A provider marked
 message, and the context size — so the system runs with no provider and no
 socket. Credentials cross as `env:VAR` references the host substitutes, so no
 secret enters guest memory.
+
+**Jobs and notifications.** A tool call is a job, always: the manager's
+registry holds the callables (`{name, description, argument schema,
+runner}`), `job_start` returns a handle at once, `job_peep` reports state,
+last tick, and output so far, and `job_kill` is accepted at any point and
+honored at the next safe point — the calling job's host imports fail with the
+canceled code, and a killed job's descendants are killed with it. A running
+job emits `job.tick` on its interval (the caller's, else 30s) — a clock
+nudge, never a health claim — and its end emits `job.completed` or
+`job.failed`; reclamation on unload emits nothing. The bus queues every
+event and wakes subscribers without blocking the publisher; one wake carries
+every event queued at that point. Events route by the job tree: a root job's
+events publish on the bus, a child's go to its parent's listener and nowhere
+else. The entry wakes the agent for its root jobs' ticks, completions,
+failures, and kills; the agent decides whether to speak.
+
+**Subagents.** A subagent is an agent the manager can call: the `subagent`
+tool's runner invokes the same agent loop with the child's own conversation,
+model, and budget, and completes when the child speaks — returning the final
+reply or, when asked, the whole conversation. The child sees only the brief;
+its turns are private. While the runner invokes the child, the job is
+attributed to the caller's instance, so a kill unwinds the turn at its next
+safe point and jobs the child starts become its descendants; the job tree is
+bounded by configuration (default depth 2). Visibility and kill are
+subtree-only.
 
 **Management semantics.** provider-manager stores `{name, endpoint,
 credential}` with validation and stable listing; model-manager resolves `alias`
@@ -262,8 +315,10 @@ session test, and per-package Go tests cover each library beside its code.
 
 - **Determinism.** Given the same tree and transcript, the log transcript
   contains the same lines; tests assert content, not timing.
-- **Isolation.** A plugin's library never imports another plugin's library;
-  shared behavior crosses through kernel keys and payloads.
+- **Isolation.** A composition plugin's library never imports another
+  composition plugin's library; shared behavior crosses through kernel keys
+  and payloads. Host-side components compose them explicitly, since the host
+  owns the wiring.
 - **Reclamation.** After unloading the tree, no fiber and no guest module
   remains.
 - **Portability.** The host builds with Go 1.23+; guests build with the wasip1
@@ -271,11 +326,11 @@ session test, and per-package Go tests cover each library beside its code.
 
 ## Non-Goals
 
-Extras beyond the six plugins; local patches to memento (changes go
-upstream); loading or unloading plugins from inside the REPL; discussion merge
-orchestration; persistence of history or credentials; cross-process or
-out-of-tree composition; any layout beyond `plugins/`, `cmd/`, and the
-`conformance/` runner in the first cut.
+Extras beyond the six plugins and the agent layer; local patches to memento
+(changes go upstream); loading or unloading plugins from inside the REPL;
+discussion merge orchestration; persistence of jobs, history, or credentials;
+cross-process or out-of-tree composition; any layout beyond `plugins/`,
+`cmd/`, and the `conformance/` runner in the first cut.
 
 ## Decisions
 
@@ -331,13 +386,15 @@ host-side anymore.
   server and no network. Host-level conformance composes that same mock
   caller, so the deterministic transcript and the mockable system are one
   mechanism.
-- **D14 — Host-side plugins live beside guest plugins.** The tool manager and
-  the notification bus are Go packages under `plugins/<name>/` with their own
-  specs, injected into the memento engine (`WithHostServices`) from
-  `cmd/core-agent`; they own OS resources and concurrency a serialized guest
-  cannot. Guests reach them only through the ABI imports, never around.
-  Subscriptions are host-configured — the assembler decides which component
-  hears which topic — and waking a guest subscriber invokes its handler.
+- **D14 — Host-side components live beside guest plugins.** The tool
+  manager and the notification bus are Go packages under `plugins/<name>/`
+  with their own specs, injected into the memento engine
+  (`WithHostServices`) from `cmd/core-agent`; they own OS resources and
+  concurrency a serialized guest cannot. The subagent runner is host-side
+  too: it registers as a manager tool over the agent guest. Guests reach the
+  host side only through the ABI imports, never around. Subscriptions are
+  host-configured — the assembler decides which component hears which topic —
+  and waking a guest subscriber invokes its handler.
 - **D15 — The terminal's loop is host-driven.** The entry runs the repl-chat
   session loop and wakes the terminal guest once per `chat.message`; the
   guest runs one agent turn per line and renders the wake's events. A guest
@@ -345,3 +402,12 @@ host-side anymore.
   no wake could reach it (memento D14: a wake is a call like any other). The
   terminal is therefore a view: the transcript stays chat-history's, and the
   guest's answer to a line carries no text.
+- **D16 — The agent layer is jobs, events, and one loop.** A call is a job,
+  always (tool-manager); components hear each other over a queued bus
+  (notifications); the agent is a guest whose turn runs from wake to
+  quiescence, yields at most one `chat.message`, and ends on a tool call.
+  The loop is addressable — the terminal, the host waker, and a subagent's
+  runner reach it the same way — and one implementation serves the top-level
+  agent and every subagent. A subagent call is a manager job whose runner
+  drives the child's turns; the child's conversation and context are its own,
+  its speech stays private, and visibility and kill are subtree-only.
