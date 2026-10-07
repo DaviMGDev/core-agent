@@ -23,11 +23,11 @@ following spatiotemporal composability — the paradigm memento implements
 The kernel is memento, imported as-is; every other capability is a plugin,
 loaded dynamically as a `.wasm` guest through memento's loader on wazero.
 
-The first cut is deliberately small: five starter plugins, and the agent
-layer adds the agent that owns the turn loop on top of them (the terminal
-invokes it and renders its `chat.message` wakes; the tool manager and the
-notification bus are host-side, D14). The LLM reaches the system through the
-REPL, like any other user.
+The cut is deliberately small: six starter plugins, and the agent layer adds
+the pieces around the agent that owns the turn loop (the terminal invokes it
+and renders its `chat.message` wakes; the tool manager, the notification bus,
+and the subagent runner are host-side, D14). The LLM reaches the system
+through the REPL, like any other user.
 
 Composition is the point. Plugins declare the context keys they inject and
 provide; memento activates a plugin only when its keys are satisfied,
@@ -338,8 +338,9 @@ cross-process or out-of-tree composition; any layout beyond `plugins/`,
   capabilities become upstream proposals, tracked in the plugin specs that
   need them.
 - **D2 — Plugin form: wasm guest first.** repl-chat is a wasm guest from day
-  one (WASI stdio fits it); management plugins are wasm guests too, with their
-  host-testable logic in the plugin library. (Charter open question 1.)
+  one (WASI stdio fit the first cut; the host drives the loop now, D15);
+  management plugins are wasm guests too, with their host-testable logic in
+  the plugin library. (Charter open question 1.)
 - **D3 — Spec placement.** System spec here; plugin-local specs under
   `plugins/<name>/specs/`, as memento keeps root specs plugin-independent.
   (Charter open question 2.)
