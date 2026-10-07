@@ -36,6 +36,7 @@ func TestFeatures(t *testing.T) {
 			Paths: []string{
 				"../specs/features/composition.feature",
 				"../specs/features/repl.feature",
+				"../specs/features/config.feature",
 				"../plugins/repl-chat/specs/features/repl-chat.feature",
 				"../plugins/provider-manager/specs/features/provider-manager.feature",
 				"../plugins/model-manager/specs/features/model-manager.feature",
@@ -69,6 +70,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerSubagentSteps(sc)
 	registerAgentSteps(sc)
 	registerSystemSteps(sc)
+	registerConfigSteps(sc)
 }
 
 type worldKey struct{}
