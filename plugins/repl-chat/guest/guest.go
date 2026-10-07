@@ -2,15 +2,15 @@
 
 // Command guest is the repl-chat wasm guest for the memento loader: the
 // terminal. It provides the key "repl" (bound to the session nickname),
-// injects "agent-loop", hosts the REPL session on WASI stdin, and hands every
-// user line to the agent. The agent owns the turn pipeline; the terminal is a
-// view over the transcript.
+// injects "agent-loop", and serves the host's wake handler: a user line runs
+// one agent turn, and the chat.message events a bus wake carries are rendered
+// to the log. The host driver owns stdin, the prompt, and the session loop —
+// reading stdin and being woken cannot both live in a serialized guest.
 package main
 
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"unsafe"
 
 	replchat "github.com/DaviMGDev/core-agent/plugins/repl-chat"
@@ -50,6 +50,14 @@ func registerEffect(id uint32) int32
 //go:wasmimport memento log
 func logMsg(ptr unsafe.Pointer, n uint32) int32
 
+// byteSlice views n bytes of guest memory at ptr.
+func byteSlice(ptr, n uint32) []byte {
+	if n == 0 {
+		return nil
+	}
+	return unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), n)
+}
+
 // emit writes s to the host log through the memento ABI.
 func emit(s string) {
 	b := []byte(s)
@@ -83,39 +91,30 @@ func bindProvided(value []byte) bool {
 	return bindHost(unsafe.Pointer(&kb[0]), uint32(len(kb)), unsafe.Pointer(&value[0]), uint32(len(value))) == 0
 }
 
-// wake is the agent's request document for one terminal line.
-type wake struct {
+// agentWake is the agent's request document for one terminal line.
+type agentWake struct {
 	Line string `json:"line"`
 }
 
-// reply is the agent's answer: the message it spoke, if any.
-type reply struct {
-	Text string `json:"text"`
-}
-
-// respond hands one user line to the agent and returns the message it spoke.
-// A turn that starts a job or stays silent returns no text, so the terminal
-// renders nothing — speech is the agent's call.
-func respond(line string) (string, error) {
-	payload, err := json.Marshal(wake{Line: line})
+// runLine hands one user line to the agent and waits for the turn to finish.
+// The message it speaks is published as chat.message, so the terminal renders
+// it from the wake — this answer carries no text.
+func runLine(line string) error {
+	req, err := json.Marshal(agentWake{Line: line})
 	if err != nil {
-		return "", err
+		return err
 	}
 	kb := []byte(agentKey)
 	resp := make([]byte, responseCap)
 	n := invokeHost(
 		unsafe.Pointer(&kb[0]), uint32(len(kb)),
-		unsafe.Pointer(&payload[0]), uint32(len(payload)),
+		unsafe.Pointer(&req[0]), uint32(len(req)),
 		unsafe.Pointer(&resp[0]), uint32(len(resp)),
 	)
 	if n <= 0 {
-		return "", fmt.Errorf("invoke %s: no response", agentKey)
+		return fmt.Errorf("invoke %s: no response", agentKey)
 	}
-	var out reply
-	if err := json.Unmarshal(resp[:n], &out); err != nil {
-		return "", fmt.Errorf("reading agent reply: %w", err)
-	}
-	return out.Text, nil
+	return nil
 }
 
 //go:wasmexport memento_declare
@@ -133,21 +132,63 @@ func mementoDeclare() uint32 {
 	return 0
 }
 
+// memento_activate registers the terminal and binds its key. The host drives
+// the session: the guest returns, freeing the module lock for wakes.
+//
 //go:wasmexport memento_activate
 func mementoActivate() uint32 {
 	if registerEffect(effectID) != 0 {
 		return 1
 	}
-
-	session := replchat.New(payload())
-	if !bindProvided([]byte(session.Nick())) {
+	if !bindProvided([]byte(replchat.New(payload()).Nick())) {
 		return 2
 	}
-	if err := session.Run(os.Stdin, emit, respond); err != nil {
-		emit("repl: input error: " + err.Error() + "\n")
-		return 3
-	}
 	return 0
+}
+
+// arena keeps handler buffers alive for the duration of one exchange.
+var arena [][]byte
+
+//go:wasmexport memento_alloc
+func mementoAlloc(size uint32) uint32 {
+	if size == 0 {
+		return 0
+	}
+	b := make([]byte, size)
+	arena = append(arena, b)
+	return uint32(uintptr(unsafe.Pointer(&b[0])))
+}
+
+// memento_handle serves one wake: a user line runs one agent turn; the events
+// a bus wake carries are rendered to the log. Failures ride the answer, so
+// the session reports them and continues.
+//
+//go:wasmexport memento_handle
+func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
+	defer func() { arena = arena[:0] }()
+	var wake replchat.Wake
+	if err := json.Unmarshal(byteSlice(reqPtr, reqLen), &wake); err != nil {
+		return 0
+	}
+	answer := replchat.Answer{}
+	switch {
+	case wake.Line != "":
+		if err := runLine(wake.Line); err != nil {
+			answer.Error = err.Error()
+		}
+	case len(wake.Events) > 0:
+		for _, line := range replchat.Render(wake.Events) {
+			emit(line + "\n")
+		}
+	default:
+		return 0
+	}
+	out, err := json.Marshal(answer)
+	if err != nil || uint32(len(out)) > respMax {
+		return 0
+	}
+	copy(byteSlice(respPtr, respMax), out)
+	return uint32(len(out))
 }
 
 //go:wasmexport memento_revert_effect

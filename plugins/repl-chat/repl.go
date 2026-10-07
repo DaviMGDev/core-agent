@@ -1,12 +1,16 @@
-// Package replchat implements the repl-chat session protocol.
+// Package replchat implements the repl-chat session protocol and the
+// terminal's wake vocabulary.
 //
 // The library is pure: Handle turns one input line into one Reply, delegating
-// chat turns to a responder; the guest owns stdin, logging, the memento ABI,
-// and the pipeline responder.
+// chat turns to a responder, and Run hosts the session loop over any reader.
+// The host driver runs Run — stdin, the prompt, and the loop are its — while
+// the guest handles one wake at a time over the memento ABI: a user line runs
+// one agent turn, and the events a bus wake carries are rendered to the log.
 package replchat
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -26,6 +30,58 @@ type Reply struct {
 	Text string
 	// Quit reports that the session must end.
 	Quit bool
+}
+
+// TopicChatMessage is the layer's topic for conversation messages.
+const TopicChatMessage = "chat.message"
+
+// Wake is one host call into the terminal: a user line, or the events a bus
+// wake carries.
+type Wake struct {
+	Line   string  `json:"line,omitempty"`
+	Events []Event `json:"events,omitempty"`
+}
+
+// Event is one bus event in a wake.
+type Event struct {
+	Topic   string          `json:"topic"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// Message is the chat.message payload: the text a renderer shows.
+type Message struct {
+	Text string `json:"text"`
+}
+
+// Answer is the terminal's reply to a wake: empty on success, or the failure
+// for the session to report in the transcript.
+type Answer struct {
+	Error string `json:"error,omitempty"`
+}
+
+// Render returns the transcript lines one wake's events contribute:
+// chat.message events, one line per message. A payload that carries a text
+// renders the text (an empty one renders nothing); any other payload renders
+// verbatim.
+func Render(events []Event) []string {
+	var out []string
+	for _, e := range events {
+		if e.Topic != TopicChatMessage {
+			continue
+		}
+		text := string(e.Payload)
+		var m struct {
+			Text *string `json:"text"`
+		}
+		if err := json.Unmarshal(e.Payload, &m); err == nil && m.Text != nil {
+			text = *m.Text
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		out = append(out, oneLine(text))
+	}
+	return out
 }
 
 // Session is one REPL session: a nickname and a chat-turn counter.
@@ -79,8 +135,9 @@ func (s *Session) Handle(line string, respond func(string) (string, error)) (Rep
 // every read, and one response per chat turn; blank lines emit nothing more
 // than the next prompt. A responder error is reported in the transcript and
 // the session continues. It returns when a quit command arrives or the input
-// ends, and reports a read error. The guest supplies stdin, wires emit to the
-// kernel log, and supplies the pipeline responder.
+// ends, and reports a read error. The host driver supplies stdin and wires
+// emit to the terminal's output; a chat turn's message arrives through the
+// responder's published chat.message, not its return value.
 func (s *Session) Run(in io.Reader, emit func(string), respond func(string) (string, error)) error {
 	emit(s.JoinMessage() + "\n")
 	sc := bufio.NewScanner(in)

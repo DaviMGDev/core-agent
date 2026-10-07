@@ -1,6 +1,7 @@
 package replchat
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -147,6 +148,40 @@ func TestRunEndsOnEOF(t *testing.T) {
 	}
 	if !strings.Contains(joined, "echo: hi") || !strings.Contains(joined, "you> ") {
 		t.Errorf("EOF session transcript incomplete:\n%s", joined)
+	}
+}
+
+func TestRenderChatMessages(t *testing.T) {
+	events := []Event{
+		{Topic: TopicChatMessage, Payload: []byte(`{"text":"hello there"}`)},
+		{Topic: "job.tick", Payload: []byte(`{"elapsed":"1s"}`)},
+		{Topic: TopicChatMessage, Payload: []byte(`plain text`)},
+		{Topic: TopicChatMessage, Payload: []byte(`{"text":""}`)},
+		{Topic: TopicChatMessage, Payload: []byte(`{"text":"two\nlines"}`)},
+	}
+	got := Render(events)
+	want := []string{"hello there", "plain text", "two lines"}
+	if len(got) != len(want) {
+		t.Fatalf("Render = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Render[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestWakeRoundTrip(t *testing.T) {
+	raw := []byte(`{"events":[{"topic":"chat.message","payload":{"text":"hi"}}]}`)
+	var w Wake
+	if err := json.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("unmarshal wake: %v", err)
+	}
+	if w.Line != "" || len(w.Events) != 1 || w.Events[0].Topic != TopicChatMessage {
+		t.Fatalf("wake = %+v, want one chat.message event", w)
+	}
+	if got := Render(w.Events); len(got) != 1 || got[0] != "hi" {
+		t.Fatalf("Render(wake) = %q, want [hi]", got)
 	}
 }
 
