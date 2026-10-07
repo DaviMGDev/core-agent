@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/DaviMGDev/core-agent/plugins/agent"
 	"github.com/DaviMGDev/core-agent/plugins/notifications"
@@ -53,6 +54,10 @@ type Options struct {
 	Model string
 	// Budget is the child's default context budget.
 	Budget int
+	// Call, when set, serializes agent calls: the runner holds it from
+	// attribution to release, so an attribution scoped to one call cannot
+	// leak into the next. Every caller of the same agent must share it.
+	Call sync.Locker
 }
 
 // depth returns the configured bound.
@@ -126,7 +131,7 @@ func run(ctx context.Context, loop Agent, jobs Jobs, opts Options, args json.Raw
 
 	req := agent.Wake{Line: call.Brief, Config: &cfg, Dump: wantConversation, Private: true}
 	for {
-		resp, err := turn(ctx, loop, jobs, job, req)
+		resp, err := turn(ctx, loop, jobs, job, req, opts.Call)
 		if err != nil {
 			return nil, err
 		}
@@ -155,13 +160,19 @@ func run(ctx context.Context, loop Agent, jobs Jobs, opts Options, args json.Raw
 
 // turn invokes one child turn, attributing the job to the caller's instance
 // for the duration of the call: cancellation and child adoption answer for
-// the turn in flight, and nothing else.
-func turn(ctx context.Context, loop Agent, jobs Jobs, job *toolmanager.Job, req agent.Wake) (wakeResponse, error) {
+// the turn in flight, and nothing else. The call gate, when configured,
+// spans attribution to release, so no other call can observe the attribution
+// after this one ends.
+func turn(ctx context.Context, loop Agent, jobs Jobs, job *toolmanager.Job, req agent.Wake, gate sync.Locker) (wakeResponse, error) {
 	b, err := json.Marshal(req)
 	if err != nil {
 		return wakeResponse{}, fmt.Errorf("subagent: %w", err)
 	}
 	if caller := job.Caller(); caller != nil {
+		if gate != nil {
+			gate.Lock()
+			defer gate.Unlock()
+		}
 		jobs.Attribute(caller, job)
 		defer jobs.Release(caller, job)
 	}

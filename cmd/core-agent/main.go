@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/DaviMGDev/core-agent/plugins/agent"
@@ -163,6 +164,9 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 
 	bus := notifications.New()
 	manager := toolmanager.New(toolmanager.Options{Publisher: bus})
+	// The gate spans attribution to release for every agent call, so a job
+	// scoped to one turn cannot answer for the next.
+	callGate := &sync.Mutex{}
 	engine, err := wasm.NewEngine(ctx,
 		wasm.WithHTTPCredentialResolver(os.LookupEnv),
 		wasm.WithHostServices(busServices{bus: bus, manager: manager}),
@@ -205,11 +209,11 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	// subagent tool over it, so a delegation is a job whose runner drives the
 	// child's turns.
 	agentComp := comps[len(comps)-2]
-	if err := manager.Registry().Declare(subagent.Tool(agentComp, manager, subagent.Options{})); err != nil {
+	if err := manager.Registry().Declare(subagent.Tool(agentComp, manager, subagent.Options{Call: callGate})); err != nil {
 		return fmt.Errorf("core-agent: subagent tool: %w", err)
 	}
 	for _, topic := range jobWakeTopics {
-		bus.Subscribe(topic, agentWaker{ctx: ctx, comp: agentComp, log: out})
+		bus.Subscribe(topic, agentWaker{ctx: ctx, comp: agentComp, log: out, gate: callGate})
 	}
 	if cfg.onComposed != nil {
 		cfg.onComposed(manager)
@@ -223,7 +227,10 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	session := replchat.New(cfg.nick)
 	emit := func(s string) { _, _ = out.Write([]byte(s)) }
 	if err := session.Run(in, emit, func(line string) (string, error) {
+		// The terminal's line reaches the agent, so it takes the same gate.
+		callGate.Lock()
 		answer, err := invokeTerminal(ctx, terminal, replchat.Wake{Line: line})
+		callGate.Unlock()
 		if err != nil {
 			return "", err
 		}
@@ -265,6 +272,7 @@ type agentWaker struct {
 	ctx  context.Context
 	comp *wasm.WASMComponent
 	log  io.Writer
+	gate sync.Locker
 }
 
 func (w agentWaker) Wake(sub *notifications.Subscription) {
@@ -279,6 +287,10 @@ func (w agentWaker) Wake(sub *notifications.Subscription) {
 	req, err := json.Marshal(wake)
 	if err != nil {
 		return
+	}
+	if w.gate != nil {
+		w.gate.Lock()
+		defer w.gate.Unlock()
 	}
 	if _, err := w.comp.Handle(w.ctx, req); err != nil {
 		fmt.Fprintf(w.log, "agent: wake: %v\n", err)

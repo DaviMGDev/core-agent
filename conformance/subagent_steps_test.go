@@ -18,26 +18,12 @@ import (
 	"github.com/DaviMGDev/memento/runtime"
 )
 
-// subWake is the agent request the subagent runner sends.
-type subWake struct {
-	Line   string        `json:"line,omitempty"`
-	Events []subEvent    `json:"events,omitempty"`
-	Config *agent.Config `json:"config,omitempty"`
-	Dump   bool          `json:"dump,omitempty"`
-}
-
-// subEvent is one bus event in a wake.
-type subEvent struct {
-	Topic   string          `json:"topic"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-}
-
 // fakeSubAgent is the agent-loop surface a subagent scenario calls: it records
 // the wakes it receives and answers from a script.
 type fakeSubAgent struct {
 	mu        sync.Mutex
-	wakes     []subWake
-	answer    func(w subWake) (text, job string)
+	wakes     []agent.Wake
+	answer    func(w agent.Wake) (text, job string)
 	block     chan struct{}
 	recurse   bool
 	spawnTool string
@@ -48,7 +34,7 @@ type fakeSubAgent struct {
 }
 
 func (a *fakeSubAgent) Handle(ctx context.Context, req []byte) ([]byte, error) {
-	var w subWake
+	var w agent.Wake
 	if err := json.Unmarshal(req, &w); err != nil {
 		return nil, err
 	}
@@ -116,10 +102,10 @@ func (a *fakeSubAgent) Handle(ctx context.Context, req []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-func (a *fakeSubAgent) snapshot() []subWake {
+func (a *fakeSubAgent) snapshot() []agent.Wake {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return append([]subWake(nil), a.wakes...)
+	return append([]agent.Wake(nil), a.wakes...)
 }
 
 // deepest returns the deepest job the fake agent has started. Nested turns
@@ -177,7 +163,7 @@ func registerSubagentSteps(sc *godog.ScenarioContext) {
 
 // newSubagentWorld wires a manager with the subagent tool over the fake agent.
 func newSubagentWorld(w *world, opts subagent.Options) {
-	w.subAgent = &fakeSubAgent{answer: func(w subWake) (string, string) {
+	w.subAgent = &fakeSubAgent{answer: func(w agent.Wake) (string, string) {
 		return "child: " + w.Line, ""
 	}}
 	w.tmRecorder = &tmRecorder{}
@@ -256,7 +242,7 @@ func stepSubagentKilled(ctx context.Context) error {
 }
 
 // waitSubWakes waits until the fake agent has seen n wakes.
-func waitSubWakes(w *world, n int) ([]subWake, error) {
+func waitSubWakes(w *world, n int) ([]agent.Wake, error) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if wakes := w.subAgent.snapshot(); len(wakes) >= n {
@@ -289,7 +275,7 @@ func stepManagerSubagentResolving(ctx context.Context) error {
 			return err
 		}
 	}
-	w.subAgent.answer = func(wk subWake) (string, string) {
+	w.subAgent.answer = func(wk agent.Wake) (string, string) {
 		res, err := modelmanager.Apply(reg, modelmanager.Op{
 			Kind: "respond", Model: wk.Config.Model,
 			Context: []modelmanager.ContextMessage{{Role: "user", Text: wk.Line}},

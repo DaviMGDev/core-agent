@@ -102,7 +102,10 @@ transport policy.
 - **SA3 — Attribution is scoped to the guest call.** The runner attributes
   the job to the caller's instance around each agent invocation and releases
   it while waiting, so cancellation and child adoption answer for the turn in
-  flight only.
+  flight only. The optional call gate spans attribution to release: every
+  caller of the same agent shares it, so no other turn can observe an
+  attribution after its call ended — a killed child's job cannot answer for
+  the parent's next turn.
 - **SA4 — Depth is checked at the call.** The bound counts job depth from the
   root; past it, the call fails with the reason like any failed job. The
   default is 2.
