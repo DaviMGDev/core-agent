@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/DaviMGDev/core-agent/plugins/agent"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 )
 
@@ -15,7 +16,7 @@ import (
 type fakeLoop struct {
 	mu     sync.Mutex
 	wakes  []wakeRequest
-	answer func(w wakeRequest) (text string, job string, conversation []json.RawMessage)
+	answer func(w wakeRequest) (text string, job string, conversation []agent.Message)
 }
 
 func (f *fakeLoop) Handle(_ context.Context, req []byte) ([]byte, error) {
@@ -81,7 +82,7 @@ func TestBriefIsRequired(t *testing.T) {
 }
 
 func TestCallRunsOnItsOwnConversation(t *testing.T) {
-	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []json.RawMessage) {
+	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []agent.Message) {
 		return "child: " + w.Line, "", nil
 	}}
 	m, err := newManager(loop, Options{})
@@ -112,7 +113,7 @@ func TestCallRunsOnItsOwnConversation(t *testing.T) {
 }
 
 func TestCallReturnsTheChildsReply(t *testing.T) {
-	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []json.RawMessage) {
+	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []agent.Message) {
 		return "child: " + w.Line, "", nil
 	}}
 	m, err := newManager(loop, Options{})
@@ -130,5 +131,36 @@ func TestCallReturnsTheChildsReply(t *testing.T) {
 	}
 	if res.Reply != "child: do the thing" {
 		t.Fatalf("reply = %q, want the child's answer", res.Reply)
+	}
+	if len(res.Conversation) != 0 {
+		t.Fatalf("default result carries %d conversation turns, want none", len(res.Conversation))
+	}
+}
+
+func TestCallReturnsTheConversationWhenAsked(t *testing.T) {
+	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []agent.Message) {
+		if !w.Dump {
+			return "child: " + w.Line, "", nil
+		}
+		return "child: " + w.Line, "", []agent.Message{
+			{Role: "user", Text: w.Line},
+			{Role: "assistant", Text: "child: " + w.Line},
+		}
+	}}
+	m, err := newManager(loop, Options{})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	job := m.Start(ToolName, json.RawMessage(`{"brief":"do the thing","return":"conversation"}`), 0)
+	st := job.Wait()
+	if st.State != toolmanager.StateDone {
+		t.Fatalf("job = %s (%s), want done", st.State, st.Error)
+	}
+	res, ok := st.Result.(Result)
+	if !ok {
+		t.Fatalf("result = %#v, want subagent.Result", st.Result)
+	}
+	if len(res.Conversation) != 2 || res.Conversation[0].Role != "user" || res.Conversation[1].Role != "assistant" {
+		t.Fatalf("conversation = %+v, want the child's user and assistant turns", res.Conversation)
 	}
 }

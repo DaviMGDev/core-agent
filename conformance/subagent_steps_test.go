@@ -63,6 +63,13 @@ func (a *fakeSubAgent) Handle(ctx context.Context, req []byte) ([]byte, error) {
 	if job != "" {
 		out["job"] = job
 	}
+	// Mirror the guest: a dump answer carries the turns the wake ran on.
+	if w.Dump && text != "" {
+		out["conversation"] = []agent.Message{
+			{Role: "user", Text: w.Line},
+			{Role: "assistant", Text: text},
+		}
+	}
 	return json.Marshal(out)
 }
 
@@ -83,6 +90,9 @@ func registerSubagentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the child's first wake carries only "([^"]*)"$`, stepChildFirstWakeBrief)
 	sc.Step(`^the child's conversation is its own$`, stepChildConversationOwn)
 	sc.Step(`^the two calls use different conversations$`, stepTwoConversations)
+	sc.Step(`^a subagent is started with the brief "([^"]*)" asking for the conversation$`, stepStartSubagentConversation)
+	sc.Step(`^the result carries no conversation$`, stepResultNoConversation)
+	sc.Step(`^the result carries the child's conversation$`, stepResultConversation)
 }
 
 // newSubagentWorld wires a manager with the subagent tool over the fake agent.
@@ -175,6 +185,45 @@ func waitSubWakes(w *world, n int) ([]subWake, error) {
 		time.Sleep(time.Millisecond)
 	}
 	return nil, fmt.Errorf("child saw %d wakes, want %d", len(w.subAgent.snapshot()), n)
+}
+
+func stepStartSubagentConversation(ctx context.Context, brief string) error {
+	w := worldFrom(ctx)
+	args, err := json.Marshal(map[string]string{"brief": brief, "return": "conversation"})
+	if err != nil {
+		return err
+	}
+	w.subJob = w.subManager.Start(subagent.ToolName, args, 0)
+	return nil
+}
+
+func stepResultNoConversation(ctx context.Context) error {
+	w := worldFrom(ctx)
+	st := w.subJob.Wait()
+	res, ok := st.Result.(subagent.Result)
+	if !ok {
+		return fmt.Errorf("subagent result = %#v, want subagent.Result", st.Result)
+	}
+	if len(res.Conversation) != 0 {
+		return fmt.Errorf("result carries %d conversation turns, want none", len(res.Conversation))
+	}
+	return nil
+}
+
+func stepResultConversation(ctx context.Context) error {
+	w := worldFrom(ctx)
+	st := w.subJob.Wait()
+	res, ok := st.Result.(subagent.Result)
+	if !ok {
+		return fmt.Errorf("subagent result = %#v, want subagent.Result", st.Result)
+	}
+	if len(res.Conversation) != 2 {
+		return fmt.Errorf("result carries %d conversation turns, want the child's two", len(res.Conversation))
+	}
+	if res.Conversation[0].Role != "user" || res.Conversation[1].Role != "assistant" {
+		return fmt.Errorf("conversation roles = %q, %q; want user, assistant", res.Conversation[0].Role, res.Conversation[1].Role)
+	}
+	return nil
 }
 
 func stepChildFirstWakeBrief(ctx context.Context, brief string) error {

@@ -34,3 +34,17 @@ Feature: Subagent — an agent callable as a tool
       When a subagent is started with the brief "first"
       And a subagent is started with the brief "second"
       Then the two calls use different conversations
+
+  Rule: The caller chooses the return shape
+
+    Scenario: The default returns only the final reply
+      Given a manager with a subagent tool
+      When a subagent is started with the brief "summarize"
+      Then the subagent job reaches done with reply "child: summarize"
+      And the result carries no conversation
+
+    Scenario: The caller can ask for the whole conversation
+      Given a manager with a subagent tool
+      When a subagent is started with the brief "summarize" asking for the conversation
+      Then the subagent job reaches done with reply "child: summarize"
+      And the result carries the child's conversation
