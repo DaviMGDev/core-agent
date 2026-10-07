@@ -16,3 +16,21 @@ Feature: Subagent — an agent callable as a tool
       Then peep reports the subagent job running
       When the subagent job is killed
       Then the subagent job is killed at once
+
+  Rule: The child is isolated
+
+    Scenario: The child's first wake carries only the brief
+      Given a manager with a subagent tool
+      When a subagent is started with the brief "count the files"
+      Then the child's first wake carries only "count the files"
+
+    Scenario: The child's conversation is its own
+      Given a manager with a subagent tool
+      When a subagent is started with the brief "count the files"
+      Then the child's conversation is its own
+
+    Scenario: Two calls do not share a conversation
+      Given a manager with a subagent tool
+      When a subagent is started with the brief "first"
+      And a subagent is started with the brief "second"
+      Then the two calls use different conversations

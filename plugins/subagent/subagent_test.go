@@ -3,6 +3,7 @@ package subagent
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -76,6 +77,37 @@ func TestBriefIsRequired(t *testing.T) {
 	st := job.Wait()
 	if st.State != toolmanager.StateFailed || st.Error == "" {
 		t.Fatalf("job = {%s %q}, want failed with a reason", st.State, st.Error)
+	}
+}
+
+func TestCallRunsOnItsOwnConversation(t *testing.T) {
+	loop := &fakeLoop{answer: func(w wakeRequest) (string, string, []json.RawMessage) {
+		return "child: " + w.Line, "", nil
+	}}
+	m, err := newManager(loop, Options{})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	for _, brief := range []string{"first", "second"} {
+		job := m.Start(ToolName, json.RawMessage(`{"brief":`+strconv.Quote(brief)+`}`), 0)
+		if st := job.Wait(); st.State != toolmanager.StateDone {
+			t.Fatalf("job = %s (%s), want done", st.State, st.Error)
+		}
+	}
+	wakes := loop.snapshot()
+	if len(wakes) != 2 {
+		t.Fatalf("wakes = %d, want 2", len(wakes))
+	}
+	for i, w := range wakes {
+		if w.Line != []string{"first", "second"}[i] {
+			t.Errorf("wake %d line = %q, want only the brief", i, w.Line)
+		}
+		if w.Config == nil || w.Config.Conversation == "" || w.Config.Conversation == "main" {
+			t.Fatalf("wake %d config = %+v, want its own conversation", i, w.Config)
+		}
+	}
+	if wakes[0].Config.Conversation == wakes[1].Config.Conversation {
+		t.Fatalf("both calls use %q, want their own", wakes[0].Config.Conversation)
 	}
 }
 
