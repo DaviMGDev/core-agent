@@ -34,6 +34,9 @@ D11-D13), and `cmd/core-agent` injects it into the memento engine.
   busy waits for it to return.
 - One wake drains every event queued for the subscriber at that point:
   N events become one turn.
+- A driver may wait for a subscription to drain (`WaitIdle`): the wait returns
+  once no event is queued and no wake is in flight, so a caller can let a
+  subscriber finish rendering before it continues.
 
 ## Delivery
 
@@ -43,7 +46,9 @@ until the subscriber can receive — its module lock is the waiting room — and
 then drains with `sub.Take()`. Because the drain happens when the lock is
 free, every event queued while the subscriber was busy lands in that one
 wake, and no wake preempts a call in flight. Events published after the
-drain are delivered in a later wake.
+drain are delivered in a later wake. `WaitIdle` closes the same bookkeeping:
+the subscription is idle again only after the wake returned and the queue is
+empty, which is what a session driver waits on to keep output ordered.
 
 ## Topics
 

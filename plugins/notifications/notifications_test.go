@@ -118,6 +118,69 @@ func TestWakesCoalesceWhileBusy(t *testing.T) {
 	}
 }
 
+func TestWaitIdleReturnsWhenIdle(t *testing.T) {
+	bus := New()
+	sub := bus.Subscribe(TopicChatMessage, &blockingWaker{})
+	done := make(chan struct{})
+	go func() { sub.WaitIdle(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitIdle blocked on an idle subscription")
+	}
+}
+
+func TestWaitIdleWaitsForTheWake(t *testing.T) {
+	bus := New()
+	w := &blockingWaker{release: make(chan struct{})}
+	sub := bus.Subscribe(TopicChatMessage, w)
+	bus.Publish(TopicChatMessage, []byte(`{"text":"hi"}`))
+	waitFor(t, "the blocked wake", func() bool {
+		_, active, _ := w.snapshot()
+		return active == 1
+	})
+
+	done := make(chan struct{})
+	go func() { sub.WaitIdle(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("WaitIdle returned while a wake was in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(w.release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitIdle did not return after the wake finished")
+	}
+}
+
+func TestWaitIdleSpansEventsPublishedWhileWaiting(t *testing.T) {
+	bus := New()
+	w := &blockingWaker{release: make(chan struct{})}
+	sub := bus.Subscribe(TopicChatMessage, w)
+	bus.Publish(TopicChatMessage, []byte("1"))
+	waitFor(t, "the blocked wake", func() bool {
+		_, active, _ := w.snapshot()
+		return active == 1
+	})
+
+	done := make(chan struct{})
+	go func() { sub.WaitIdle(); close(done) }()
+	bus.Publish(TopicChatMessage, []byte("2"))
+	close(w.release)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitIdle did not return")
+	}
+	if wakes, _, _ := w.snapshot(); len(wakes) != 2 {
+		t.Fatalf("wakes = %d, want 2 (the wait spans both cycles)", len(wakes))
+	}
+}
+
 func TestWakeNeverPreempts(t *testing.T) {
 	bus := New()
 	w := &blockingWaker{release: make(chan struct{})}

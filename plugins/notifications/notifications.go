@@ -39,6 +39,7 @@ type Subscription struct {
 	waker     Waker
 	queue     []Event
 	scheduled bool
+	idle      chan struct{}
 }
 
 // Take returns the events queued for the subscription and empties the queue.
@@ -49,6 +50,26 @@ func (s *Subscription) Take() []Event {
 	events := s.queue
 	s.queue = nil
 	return events
+}
+
+// WaitIdle blocks until the subscription has no queued events and no wake in
+// flight: a driver calls it to let a subscriber finish rendering before it
+// continues. A publish that arrives while waiting starts a new cycle, which
+// WaitIdle also waits out.
+func (s *Subscription) WaitIdle() {
+	for {
+		s.bus.mu.Lock()
+		if !s.scheduled {
+			s.bus.mu.Unlock()
+			return
+		}
+		idle := s.idle
+		s.bus.mu.Unlock()
+		if idle == nil {
+			return // invariant: scheduled implies an open idle channel
+		}
+		<-idle
+	}
 }
 
 // Bus is a queued publish/subscribe bus. It is safe for concurrent use.
@@ -83,6 +104,7 @@ func (b *Bus) Publish(topic string, payload []byte) {
 		s.queue = append(s.queue, Event{Topic: topic, Payload: append([]byte(nil), payload...)})
 		if !s.scheduled {
 			s.scheduled = true
+			s.idle = make(chan struct{})
 			scheduled = append(scheduled, s)
 		}
 	}
@@ -100,6 +122,10 @@ func (b *Bus) deliver(s *Subscription) {
 		b.mu.Lock()
 		if len(s.queue) == 0 {
 			s.scheduled = false
+			if s.idle != nil {
+				close(s.idle)
+				s.idle = nil
+			}
 			b.mu.Unlock()
 			return
 		}
