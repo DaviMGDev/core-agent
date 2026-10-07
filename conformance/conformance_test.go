@@ -43,6 +43,7 @@ func TestFeatures(t *testing.T) {
 				"../plugins/context-manager/specs/features/context-manager.feature",
 				"../plugins/notifications/specs/features/notifications.feature",
 				"../plugins/tool-manager/specs/features/tool-manager.feature",
+				"../plugins/subagent/specs/features/subagent.feature",
 				"../plugins/agent/specs/features/agent.feature",
 			},
 			TestingT: t,
@@ -65,6 +66,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerPluginSteps(sc)
 	registerNotificationsSteps(sc)
 	registerToolManagerSteps(sc)
+	registerSubagentSteps(sc)
 	registerAgentSteps(sc)
 	registerSystemSteps(sc)
 }
@@ -146,6 +148,12 @@ type world struct {
 	tmRelease  chan struct{}
 	tmDeclErr  error
 
+	// subagent
+	subAgent   *fakeSubAgent
+	subManager *toolmanager.Manager
+	subJob     *toolmanager.Job
+	subBlock   chan struct{}
+
 	// shared
 	err error
 
@@ -185,6 +193,16 @@ func (w *world) close() {
 	}
 	if w.tmManager != nil {
 		w.tmManager.Close()
+	}
+	if w.subBlock != nil {
+		select {
+		case <-w.subBlock:
+		default:
+			close(w.subBlock)
+		}
+	}
+	if w.subManager != nil {
+		w.subManager.Close()
 	}
 }
 
