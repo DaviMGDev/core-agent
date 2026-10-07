@@ -52,6 +52,10 @@ the assembler wired them.
   `chat-history`, `model-registry`, `llm-context`.
 - Handler: `{"line": ...}` for a terminal wake or `{"events": [...]}` for a
   bus wake; answers `{"text": ...}` or `{"job": ...}`.
+- A wake may carry `{"config": {...}}` — the turn's configuration, used for
+  that wake only: a subagent's own conversation, model, budget, and tool
+  surface. It may carry `{"dump": true}`, and the answer then includes
+  `{"conversation": [...]}`, the turns the wake ran on.
 - Payload: the agent's JSON configuration (conversation, model, budget,
   tools, hidden, renamed).
 - Effect inverse on unload: `agent: loop closed`.
@@ -77,3 +81,7 @@ implementation; model transport.
   configuration; per-agent differences are data.
 - **A4 — Presentation never invents.** The presented surface is a projection
   of configured tools: hide, rename, prune — nothing else.
+- **A5 — Configuration travels in the wake.** The activation payload is the
+  agent's default; a wake may override it for its turn, which is how one
+  implementation serves the top-level agent and every subagent without
+  subagent-specific code.

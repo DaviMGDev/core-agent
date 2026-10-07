@@ -130,10 +130,14 @@ type answerResult struct {
 }
 
 // wakeRequest is one wake: a user line from the terminal, or the events a bus
-// wake carries.
+// wake carries. Config overrides the activation configuration for this wake
+// only — a subagent's own conversation, model, and budget — and Dump asks the
+// answer to carry the conversation so a caller can collect it.
 type wakeRequest struct {
-	Line   string  `json:"line,omitempty"`
-	Events []event `json:"events,omitempty"`
+	Line   string        `json:"line,omitempty"`
+	Events []event       `json:"events,omitempty"`
+	Config *agent.Config `json:"config,omitempty"`
+	Dump   bool          `json:"dump,omitempty"`
 }
 
 type event struct {
@@ -141,11 +145,12 @@ type event struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-// wakeResponse is the handler's answer: the message it spoke, or the job it
-// started.
+// wakeResponse is the handler's answer: the message it spoke, the job it
+// started, and — when asked — the conversation the turn ran on.
 type wakeResponse struct {
-	Text string `json:"text,omitempty"`
-	Job  string `json:"job,omitempty"`
+	Text         string          `json:"text,omitempty"`
+	Job          string          `json:"job,omitempty"`
+	Conversation []agent.Message `json:"conversation,omitempty"`
 }
 
 // invokeJSON sends one request to a key's provider and returns the raw
@@ -252,6 +257,23 @@ func deps(cfg agent.Config) agent.Deps {
 	}
 }
 
+// allTurns asks chat-history for the whole conversation; recent clamps to the
+// length, so a bound above any real conversation returns everything.
+const allTurns = 1 << 20
+
+// dumpConversation reads a conversation back from chat-history.
+func dumpConversation(conversation string) ([]agent.Message, error) {
+	raw, err := invokeJSON(historyKey, turn{Op: "recent", Conversation: conversation, N: allTurns})
+	if err != nil {
+		return nil, err
+	}
+	var res historyResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, fmt.Errorf("reading history: %w", err)
+	}
+	return res.Messages, nil
+}
+
 // describeEvents flattens a bus wake into the line the model sees.
 func describeEvents(events []event) string {
 	line := ""
@@ -320,6 +342,10 @@ func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 	if err := json.Unmarshal(byteSlice(reqPtr, reqLen), &wake); err != nil {
 		return 0
 	}
+	cfg := config
+	if wake.Config != nil {
+		cfg = wake.Config.Normalized()
+	}
 	line := wake.Line
 	if line == "" {
 		line = describeEvents(wake.Events)
@@ -327,17 +353,23 @@ func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 	if line == "" {
 		return 0
 	}
-	result, err := agent.RunTurn(config, line, deps(config))
+	result, err := agent.RunTurn(cfg, line, deps(cfg))
 	if err != nil {
 		emit("agent: " + err.Error() + "\n")
 		return 0
 	}
-	out, err := json.Marshal(wakeResponse{Text: result.Text, Job: result.Job})
-	if err != nil || uint32(len(out)) > respMax {
+	out := wakeResponse{Text: result.Text, Job: result.Job}
+	if wake.Dump {
+		if msgs, err := dumpConversation(cfg.Conversation); err == nil {
+			out.Conversation = msgs
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil || uint32(len(b)) > respMax {
 		return 0
 	}
-	copy(byteSlice(respPtr, respMax), out)
-	return uint32(len(out))
+	copy(byteSlice(respPtr, respMax), b)
+	return uint32(len(b))
 }
 
 //go:wasmexport memento_revert_effect
