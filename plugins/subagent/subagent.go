@@ -223,7 +223,7 @@ func childConfig(job *toolmanager.Job, call Call, jobs Jobs, opts Options) agent
 		Budget:       budget,
 	}
 	for _, t := range jobs.Registry().Tools() {
-		cfg.Tools = append(cfg.Tools, agent.Tool{Name: t.Name, Description: t.Description})
+		cfg.Tools = append(cfg.Tools, agent.Tool{Name: t.Name, Description: t.Description, Parameters: t.Schema})
 	}
 	return cfg.Normalized()
 }

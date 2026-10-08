@@ -69,6 +69,48 @@ func TestToolDeclaresItsSurface(t *testing.T) {
 	}
 }
 
+func TestChildConfigCarriesArgumentSchemas(t *testing.T) {
+	loop := &fakeLoop{answer: func(w agent.Wake) (string, string, []agent.Message) {
+		return "done", "", nil
+	}}
+	m, err := newManager(loop, Options{})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	schema := json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)
+	err = m.Registry().Declare(toolmanager.Tool{
+		Name:        "read",
+		Description: "read a file",
+		Schema:      schema,
+		Run:         func(_ context.Context, _ json.RawMessage, _ *toolmanager.Output) (any, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatalf("Declare read: %v", err)
+	}
+
+	job := m.Start(ToolName, json.RawMessage(`{"brief":"read the file"}`), 0)
+	if st := job.Wait(); st.State != toolmanager.StateDone {
+		t.Fatalf("job = {%s %q}, want done", st.State, st.Error)
+	}
+
+	wakes := loop.snapshot()
+	if len(wakes) != 1 || wakes[0].Config == nil {
+		t.Fatalf("wakes = %+v, want one configured wake", wakes)
+	}
+	var found *agent.Tool
+	for i, tool := range wakes[0].Config.Tools {
+		if tool.Name == "read" {
+			found = &wakes[0].Config.Tools[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("child tools = %+v, want the registry's read", wakes[0].Config.Tools)
+	}
+	if found.Description != "read a file" || string(found.Parameters) != string(schema) {
+		t.Fatalf("child tool = %+v, want name, description, and the argument schema copied", *found)
+	}
+}
+
 func TestBriefIsRequired(t *testing.T) {
 	m, err := newManager(&fakeLoop{}, Options{})
 	if err != nil {

@@ -159,6 +159,8 @@ func registerSubagentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the child job completes$`, stepChildCompletes)
 	sc.Step(`^the parent's listener receives the child's events$`, stepParentListenerEvents)
 	sc.Step(`^the bus saw only the root job's start$`, stepBusRootOnly)
+	sc.Step(`^a manager with a subagent tool and the tool "([^"]*)" with an argument schema$`, stepManagerSubagentToolWithRegistryTool)
+	sc.Step(`^the child's wake offers "([^"]*)" with its argument schema$`, stepChildWakeOffersWithSchema)
 }
 
 // newSubagentWorld wires a manager with the subagent tool over the fake agent.
@@ -176,6 +178,40 @@ func newSubagentWorld(w *world, opts subagent.Options) {
 func stepManagerSubagentTool(ctx context.Context) error {
 	newSubagentWorld(worldFrom(ctx), subagent.Options{})
 	return worldFrom(ctx).err
+}
+
+func stepManagerSubagentToolWithRegistryTool(ctx context.Context, toolName string) error {
+	w := worldFrom(ctx)
+	newSubagentWorld(w, subagent.Options{})
+	if w.err != nil {
+		return w.err
+	}
+	schema := json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)
+	return w.subManager.Registry().Declare(toolmanager.Tool{
+		Name:        toolName,
+		Description: "description of " + toolName,
+		Schema:      schema,
+		Run:         func(_ context.Context, _ json.RawMessage, _ *toolmanager.Output) (any, error) { return nil, nil },
+	})
+}
+
+func stepChildWakeOffersWithSchema(ctx context.Context, toolName string) error {
+	w := worldFrom(ctx)
+	// The child's first wake arrives asynchronously after Start; wait for
+	// it like every other wake-observing step instead of reading it raw.
+	wakes, err := waitSubWakes(w, 1)
+	if err != nil {
+		return err
+	}
+	if wakes[0].Config == nil {
+		return fmt.Errorf("no child wake with config")
+	}
+	for _, t := range wakes[0].Config.Tools {
+		if t.Name == toolName && len(t.Parameters) > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("tool %q with schema not found in child wake config: %+v", toolName, wakes[0].Config.Tools)
 }
 
 func stepManagerBlockingSubagentTool(ctx context.Context) error {

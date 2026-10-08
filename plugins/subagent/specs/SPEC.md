@@ -35,6 +35,10 @@ the manager.
   the parent's turn surfaces the result.
 - The child's model is configuration, resolved by model-manager like any
   agent; a per-call `model` overrides the tool's default.
+- The child's tool surface is the registry's, copied with its schemas: each
+  callable crosses as `{name, description, parameters}` so the child's model
+  can call tools natively, exactly like the top-level agent. The surface is
+  configuration (SA5) — the runner never filters it.
 - The runner drives the child's turns: it invokes the agent loop with the
   brief, and when the turn ends in a job or in silence it waits for the
   child's subtree events (the parent is the sole listener) and wakes the
@@ -111,4 +115,5 @@ transport policy.
   default is 2.
 - **SA5 — Configuration is data.** The child's conversation, model, budget,
   and tool surface travel in the wake's config; the agent loop has no
-  subagent-specific code.
+  subagent-specific code. The surface carries each callable's argument
+  schema, so native provider calls work in a child unchanged.
