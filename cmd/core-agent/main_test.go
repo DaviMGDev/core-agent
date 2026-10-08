@@ -266,6 +266,41 @@ func TestRunMockLLMAnswersWithoutProvider(t *testing.T) {
 	}
 }
 
+// TestRunProviderOpenAIRegistersInComposition proves the provider plugin
+// joins the default composition: with no openai entry in the provider
+// document, the session transcript shows the plugin registering it at
+// activation, and unloading releases it — while the session itself answers
+// through the scripted local provider, untouched by the registration.
+func TestRunProviderOpenAIRegistersInComposition(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"local answer"}}]}`)
+	}))
+	defer srv.Close()
+
+	cfg := sessionFrom(t, testResolved(t), "tester")
+	cfg.providers = providerDoc(testProvider{Name: "local", Endpoint: srv.URL, Models: []string{"gemma4:cloud"}})
+
+	var out transcript
+	in := strings.NewReader("hello there\n:quit\n")
+	if err := runConfig(context.Background(), in, &out, cfg); err != nil {
+		t.Fatalf("runConfig: %v", err)
+	}
+	got := out.String()
+
+	for _, want := range []string{
+		`provider-manager: 1 provider(s) ready`,
+		`provider-openai: provider "openai" registered`,
+		`local answer`,
+		`provider-openai: provider "openai" released`,
+		`provider-manager: providers released`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("transcript missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // TestRunMockSessionSubagentRunAndKill scripts the whole agent layer: the
 // model delegates to a subagent (a job), hears the completion wake, speaks
 // unprompted, then delegates a slow call the test kills.

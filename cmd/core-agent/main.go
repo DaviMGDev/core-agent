@@ -26,6 +26,7 @@ import (
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
 	"github.com/DaviMGDev/core-agent/plugins/notifications"
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
+	provideropenai "github.com/DaviMGDev/core-agent/plugins/provider-openai"
 	replchat "github.com/DaviMGDev/core-agent/plugins/repl-chat"
 	"github.com/DaviMGDev/core-agent/plugins/subagent"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
@@ -132,10 +133,15 @@ type plugin struct {
 	payload any
 }
 
-// starterPlugins returns the six plugins in dependency order, REPL last.
+// starterPlugins returns the seven plugins in dependency order, REPL last.
+// provider-openai sits right after provider-manager: it injects the live
+// registry and registers its provider at activation. Its payload is empty,
+// so it registers the standard OpenAI provider; a same-named config entry
+// is left untouched by design.
 func starterPlugins(cfg sessionConfig) []plugin {
 	return []plugin{
 		{"provider-manager", providermanager.Wasm, cfg.providers},
+		{"provider-openai", provideropenai.Wasm, ""},
 		{"model-manager", modelmanager.Wasm, cfg.models},
 		{"chat-history", chathistory.Wasm, cfg.history},
 		{"context-manager", contextmanager.Wasm, cfg.context},
