@@ -66,3 +66,17 @@ Feature: provider-manager registry
       When a mock provider "mock" serving "llama-3.2" is registered
       Then the registry contains "mock"
       And "llama-3.2" is served by "mock"
+
+  Rule: Live registry operations over the handler
+
+    Scenario: A provider registers over the handler
+      Given a live provider registry
+      When an operation registers provider "late" at "https://late.example/v1" serving "model-x"
+      Then the live registry lists "late"
+      And the operation "provider-for" for model "model-x" returns "late"
+
+    Scenario: A provider unregisters over the handler
+      Given a live provider registry with provider "late"
+      When an operation unregisters provider "late"
+      Then the live registry does not list "late"
+      And the operation "provider-for" for model "model-x" returns not found

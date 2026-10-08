@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 // ErrDuplicate is returned when a provider name is already registered.
@@ -53,8 +54,9 @@ func Validate(p Provider) error {
 	return nil
 }
 
-// Registry stores providers in insertion order.
+// Registry stores providers in insertion order. It is concurrency-safe.
 type Registry struct {
+	mu        sync.RWMutex
 	order     []string
 	providers map[string]Provider
 }
@@ -69,6 +71,8 @@ func (r *Registry) Register(p Provider) error {
 	if err := Validate(p); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, ok := r.providers[p.Name]; ok {
 		return fmt.Errorf("%w: %q", ErrDuplicate, p.Name)
 	}
@@ -79,15 +83,23 @@ func (r *Registry) Register(p Provider) error {
 
 // Get returns the provider named name.
 func (r *Registry) Get(name string) (Provider, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	p, ok := r.providers[name]
 	return p, ok
 }
 
 // Len returns the number of registered providers.
-func (r *Registry) Len() int { return len(r.order) }
+func (r *Registry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.order)
+}
 
 // List returns the providers in insertion order.
 func (r *Registry) List() []Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]Provider, 0, len(r.order))
 	for _, name := range r.order {
 		out = append(out, r.providers[name])
@@ -97,6 +109,8 @@ func (r *Registry) List() []Provider {
 
 // Remove deletes the provider named name.
 func (r *Registry) Remove(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, ok := r.providers[name]; !ok {
 		return fmt.Errorf("provider-manager: unknown provider %q", name)
 	}
@@ -113,6 +127,8 @@ func (r *Registry) Remove(name string) error {
 // ProviderFor returns the first provider, in insertion order, that lists the
 // given concrete model.
 func (r *Registry) ProviderFor(model string) (Provider, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, name := range r.order {
 		p := r.providers[name]
 		for _, m := range p.Models {
@@ -139,4 +155,47 @@ func ParseConfig(payload []byte) ([]Provider, error) {
 		return nil, fmt.Errorf("provider-manager: parsing config: %w", err)
 	}
 	return c.Providers, nil
+}
+
+// Op is one operation requested over the provider registry.
+type Op struct {
+	Kind     string   `json:"op"`
+	Provider Provider `json:"provider,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	Model    string   `json:"model,omitempty"`
+}
+
+// Result is the response of an operation over the provider registry.
+type Result struct {
+	Providers []Provider `json:"providers,omitempty"`
+	Provider  Provider   `json:"provider,omitempty"`
+	Found     bool       `json:"found,omitempty"`
+	Ok        bool       `json:"ok,omitempty"`
+	Error     string     `json:"error,omitempty"`
+}
+
+// Apply runs one operation against the registry: "register" validates and
+// appends op.Provider; "unregister" removes provider named op.Name; "list"
+// returns all registered providers; "provider-for" finds the provider serving
+// op.Model.
+func Apply(r *Registry, op Op) (Result, error) {
+	switch op.Kind {
+	case "register":
+		if err := r.Register(op.Provider); err != nil {
+			return Result{Error: err.Error()}, err
+		}
+		return Result{Ok: true}, nil
+	case "unregister":
+		if err := r.Remove(op.Name); err != nil {
+			return Result{Error: err.Error()}, err
+		}
+		return Result{Ok: true}, nil
+	case "list":
+		return Result{Providers: r.List(), Ok: true}, nil
+	case "provider-for":
+		p, ok := r.ProviderFor(op.Model)
+		return Result{Provider: p, Found: ok, Ok: true}, nil
+	default:
+		return Result{}, fmt.Errorf("provider-manager: unknown operation %q", op.Kind)
+	}
 }

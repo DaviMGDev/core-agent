@@ -210,3 +210,71 @@ func TestMockProviderNeedsNoEndpointOrCredential(t *testing.T) {
 		t.Fatal("ProviderFor(unserved) = ok, want absent")
 	}
 }
+
+func lateProvider() Provider {
+	return Provider{
+		Name:       "late",
+		Endpoint:   "https://late.example/v1",
+		Credential: "env:LATE_KEY",
+		Models:     []string{"model-x"},
+	}
+}
+
+// TestApplyRegisterListsLateProvider proves the live path: a provider
+// registered after activation is listed and found by provider-for.
+func TestApplyRegisterListsLateProvider(t *testing.T) {
+	r := NewRegistry()
+	res, err := Apply(r, Op{Kind: "register", Provider: lateProvider()})
+	if err != nil || !res.Ok {
+		t.Fatalf("Apply(register) = %+v, %v; want ok", res, err)
+	}
+	res, err = Apply(r, Op{Kind: "list"})
+	if err != nil || !res.Ok || len(res.Providers) != 1 || res.Providers[0].Name != "late" {
+		t.Fatalf("Apply(list) = %+v, %v; want the late provider", res, err)
+	}
+	res, err = Apply(r, Op{Kind: "provider-for", Model: "model-x"})
+	if err != nil || !res.Ok || !res.Found || res.Provider.Name != "late" {
+		t.Fatalf("Apply(provider-for) = %+v, %v; want late", res, err)
+	}
+}
+
+// TestApplyUnregisterRemovesLateProvider proves the revert half: the
+// registration's inverse removes exactly its own entry.
+func TestApplyUnregisterRemovesLateProvider(t *testing.T) {
+	r := NewRegistry()
+	if _, err := Apply(r, Op{Kind: "register", Provider: lateProvider()}); err != nil {
+		t.Fatalf("Apply(register): %v", err)
+	}
+	res, err := Apply(r, Op{Kind: "unregister", Name: "late"})
+	if err != nil || !res.Ok {
+		t.Fatalf("Apply(unregister) = %+v, %v; want ok", res, err)
+	}
+	if r.Len() != 0 {
+		t.Fatalf("Len() = %d after unregister, want 0", r.Len())
+	}
+	res, err = Apply(r, Op{Kind: "provider-for", Model: "model-x"})
+	if err != nil || !res.Ok || res.Found {
+		t.Fatalf("Apply(provider-for) = %+v, %v; want absent", res, err)
+	}
+}
+
+// TestApplyRefusals proves duplicate and unknown names fail without
+// changing the registry, and unknown operations are refused.
+func TestApplyRefusals(t *testing.T) {
+	r := NewRegistry()
+	if _, err := Apply(r, Op{Kind: "register", Provider: lateProvider()}); err != nil {
+		t.Fatalf("Apply(register): %v", err)
+	}
+	if _, err := Apply(r, Op{Kind: "register", Provider: lateProvider()}); err == nil {
+		t.Fatal("Apply(register duplicate) = nil, want error")
+	}
+	if r.Len() != 1 {
+		t.Fatalf("Len() = %d after duplicate, want 1", r.Len())
+	}
+	if _, err := Apply(r, Op{Kind: "unregister", Name: "missing"}); err == nil {
+		t.Fatal("Apply(unregister unknown) = nil, want error")
+	}
+	if _, err := Apply(r, Op{Kind: "sing"}); err == nil {
+		t.Fatal("Apply(unknown) = nil, want error")
+	}
+}

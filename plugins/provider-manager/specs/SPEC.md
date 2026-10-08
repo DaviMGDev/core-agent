@@ -1,7 +1,7 @@
 ---
 type: spec
 title: "provider-manager — Plugin Specification"
-description: "Manages AI providers: registration, validation, lookup, listing of served models, and the endpoint/model mapping model-manager uses for calls."
+description: "Manages AI providers: registration, validation, lookup, listing of served models, live operations over the handler, and the endpoint/model mapping model-manager uses for calls."
 tags: [spec, plugin]
 sections: [context, semantics, transport, abi, conformance, non-goals, decisions]
 created: "2026-10-05"
@@ -45,6 +45,9 @@ model to an endpoint through the registry this plugin publishes.
   the given concrete model.
 - `ParseConfig` reads `{"providers":[...]}`; the guest registers every
   provider at activation and fails activation on the first invalid one.
+- Live registry operations: the handler serves `register`, `unregister`,
+  `list`, and `provider-for` so provider plugins can register at runtime
+  without rebuilding or restarting the composition.
 
 ## Transport
 
@@ -62,15 +65,19 @@ management surface.
 
 ## ABI
 
-- Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
-  `memory` (no operation handler: provider-manager is a pure management
-  surface).
-- Imports: `memento.declare_inject`, `memento.declare_provide`,
-  `memento.bind`, `memento.get_payload_len`, `memento.get_payload`,
+- Exports: `memento_declare`, `memento_activate`, `memento_handle`,
+  `memento_alloc`, `memento_revert_effect`, `memory`.
+- Imports: `memento.declare_provide`, `memento.bind`,
+  `memento.get_payload_len`, `memento.get_payload`,
   `memento.register_effect`, `memento.log`.
 - Declares: provides `provider-registry`; injects nothing.
-- Binds: `provider-registry` ← the activation payload (the provider
+- Binds: `provider-registry` ← the activation payload (the initial provider
   configuration document), as a tracked, revertible registration.
+- Handler: JSON `{op: "register"|"unregister"|"list"|"provider-for", ...}`.
+  - `register`: `{op: "register", provider: {...}}` → `{ok: true}`.
+  - `unregister`: `{op: "unregister", name: ...}` → `{ok: true}`.
+  - `list`: `{op: "list"}` → `{providers: [...]}`.
+  - `provider-for`: `{op: "provider-for", model: ...}` → `{provider: {...}, found: true|false}`.
 - Payload: JSON `{"providers":[{"name","endpoint","credential","models"}]}`.
 - Effect inverse on unload: `provider-manager: providers released`.
 
@@ -104,3 +111,7 @@ checks.
 - **PM5 — A mock provider is a provider.** Mocking the LLM is configuration,
   not a separate server: `mock` marks a provider that answers in-process, so
   the same composition runs with or without a real endpoint.
+- **PM6 — Live registry operations.** The handler answers `register`,
+  `unregister`, `list`, and `provider-for`, making provider-manager a live
+  registry so provider plugins can register at activation and model-manager
+  can resolve providers dynamically.
