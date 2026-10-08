@@ -126,14 +126,14 @@ func (s *systemSession) stop() {
 // --- system steps -----------------------------------------------------------
 
 func registerSystemSteps(sc *godog.ScenarioContext) {
-	sc.Step(`^the six starter plugins composed as fibers$`, stepComposeSystem)
-	sc.Step(`^the system is composed with the six plugins and nickname "([^"]*)"$`, stepComposeSystemNick)
-	sc.Step(`^the system is composed with the six plugins$`, stepComposeDefault)
+	sc.Step(`^the seven starter plugins composed as fibers$`, stepComposeSystem)
+	sc.Step(`^the system is composed with the seven plugins and nickname "([^"]*)"$`, stepComposeSystemNick)
+	sc.Step(`^the system is composed with the seven plugins$`, stepComposeDefault)
 	sc.Step(`^the composition settles$`, stepCompositionSettles)
 	sc.Step(`^every plugin declares its keys and activates$`, stepCompositionSettles)
-	sc.Step(`^the transcript reports all six plugins$`, stepCompositionSettles)
+	sc.Step(`^the transcript reports all seven plugins$`, stepCompositionSettles)
 	sc.Step(`^repl-chat activates after chat-history, model-manager, context-manager, and the agent$`, stepActivationOrder)
-	sc.Step(`^the six (?:starter )?plugins are active$`, stepSixActive)
+	sc.Step(`^the seven (?:starter )?plugins are active$`, stepSixActive)
 	sc.Step(`^the session starts$`, stepSessionStarts)
 	sc.Step(`^the transcript announces "([^"]*)"$`, stepTranscriptContains)
 	sc.Step(`^the transcript shows the prompt "([^"]*)"$`, stepTranscriptContains)
@@ -575,7 +575,7 @@ func waitActive(sched *rt.Scheduler, fibers []spc.FiberID) error {
 	}
 }
 
-// runHostSystem composes the six plugins at the host level over one shared
+// runHostSystem composes the seven plugins at the host level over one shared
 // key registry and drives one session: the same declarations, transcript, and
 // pipeline as cmd/core-agent, with the wasm ABI path exercised separately by
 // that entry's end-to-end test. The terminal handler renders the chat.message

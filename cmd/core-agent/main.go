@@ -1,6 +1,6 @@
 // Command core-agent drives the composed system.
 //
-// It registers the six starter plugin guests with memento, composes one
+// It registers the seven starter plugin guests with memento, composes one
 // fiber per plugin through the scheduler, drives the terminal session — the
 // host reads stdin and is woken for chat.message — and unloads on exit. The
 // entry drives the scheduler directly instead of the loader because the
@@ -36,11 +36,11 @@ import (
 )
 
 // sessionConfig is one composed session's configuration: the nickname, the
-// payloads handed to the six plugins, and the host credential resolver the
+// payloads handed to the starter plugins, and the host credential resolver the
 // HTTP transport substitutes through. Tests override the provider document to
 // point at a local server, which is what turns the deterministic stub into a
 // real provider call. onComposed, when set, receives the tool manager once
-// the six plugins are active: the entry's tests drive the host side (peep,
+// the plugins are active: the entry's tests drive the host side (peep,
 // kill) while the session runs.
 type sessionConfig struct {
 	nick        string
@@ -166,7 +166,7 @@ func main() {
 	}
 }
 
-// runConfig composes the six plugins from cfg, drives one REPL session on
+// runConfig composes the seven plugins from cfg, drives one REPL session on
 // in/out, and unloads everything before returning. Egress is open; credential
 // references in request headers are resolved through the session's credential
 // resolver (the auth store or the host environment), so a guest holds a

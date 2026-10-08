@@ -17,6 +17,7 @@ import (
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
 	"github.com/DaviMGDev/core-agent/plugins/notifications"
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
+	provideropenai "github.com/DaviMGDev/core-agent/plugins/provider-openai"
 	replchat "github.com/DaviMGDev/core-agent/plugins/repl-chat"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 	spc "github.com/DaviMGDev/memento/context"
@@ -46,6 +47,7 @@ func TestFeatures(t *testing.T) {
 				"../plugins/tool-manager/specs/features/tool-manager.feature",
 				"../plugins/subagent/specs/features/subagent.feature",
 				"../plugins/agent/specs/features/agent.feature",
+				"../plugins/provider-openai/specs/features/provider-openai.feature",
 			},
 			TestingT: t,
 		},
@@ -69,6 +71,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerToolManagerSteps(sc)
 	registerSubagentSteps(sc)
 	registerAgentSteps(sc)
+	registerProviderOpenAISteps(sc)
 	registerSystemSteps(sc)
 	registerConfigSteps(sc)
 }
@@ -101,6 +104,7 @@ type world struct {
 
 	// provider-manager
 	providers *providermanager.Registry
+	openai    provideropenai.Config
 	config    []byte
 	parsed    []providermanager.Provider
 

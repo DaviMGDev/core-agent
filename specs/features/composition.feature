@@ -1,23 +1,23 @@
-Feature: Composition of the six starter plugins
+Feature: Composition of the seven starter plugins
 
   The kernel composes plugins declared through loader entries. Activation waits
   for injected keys; unloading reverts every effect.
 
   Rule: The starter set loads as one composition
 
-    Scenario: All six plugins activate
-      Given the six starter plugins composed as fibers
+    Scenario: All seven plugins activate
+      Given the seven starter plugins composed as fibers
       When the composition settles
       Then every plugin declares its keys and activates
-      And the transcript reports all six plugins
+      And the transcript reports all seven plugins
 
     Scenario: Dependencies gate the REPL
-      Given the six starter plugins composed as fibers
+      Given the seven starter plugins composed as fibers
       When the composition settles
       Then repl-chat activates after chat-history, model-manager, context-manager, and the agent
 
     Scenario: A chat turn flows through the pipeline
-      Given the six starter plugins are active
+      Given the seven starter plugins are active
       When the user sends "hello"
       Then chat-history records a user turn and an assistant turn
       And the response names the resolved model and the context size
@@ -25,7 +25,7 @@ Feature: Composition of the six starter plugins
   Rule: Unloading is complete
 
     Scenario: Emptying the tree unloads everything
-      Given the six plugins are active
+      Given the seven plugins are active
       When every fiber is removed
       Then each plugin runs its effect inverse
       And no fiber remains in the registry

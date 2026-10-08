@@ -2,7 +2,7 @@
 
 An agent core on [memento](https://github.com/DaviMGDev/memento): the kernel is imported as-is, every other capability a plugin composed at runtime.
 
-The current cut composes **six plugins** as WebAssembly guests and adds the **agent layer** on top: a host-side tool manager where every call is a job, a queued notification bus, an addressable agent turn loop, a terminal that renders `chat.message`, and subagents callable as tools. The layer is tracked in the epic [#7](https://github.com/DaviMGDev/core-agent/issues/7).
+The current cut composes **seven plugins** as WebAssembly guests and adds the **agent layer** on top: a host-side tool manager where every call is a job, a queued notification bus, an addressable agent turn loop, a terminal that renders `chat.message`, and subagents callable as tools. The layer is tracked in the epic [#7](https://github.com/DaviMGDev/core-agent/issues/7).
 
 ## How it works
 

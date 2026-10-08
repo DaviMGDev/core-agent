@@ -23,7 +23,7 @@ following spatiotemporal composability — the paradigm memento implements
 The kernel is memento, imported as-is; every other capability is a plugin,
 loaded dynamically as a `.wasm` guest through memento's loader on wazero.
 
-The cut is deliberately small: six starter plugins, and the agent layer adds
+The cut is deliberately small: seven starter plugins, and the agent layer adds
 the pieces around the agent that owns the turn loop (the terminal invokes it
 and renders its `chat.message` wakes; the tool manager, the notification bus,
 and the subagent runner are host-side, D14). The LLM reaches the system
@@ -55,16 +55,16 @@ reconcile a loader tree with payloads.
 
 ## User Stories
 
-**US-001 — The system composes the six plugins**
+**US-001 — The system composes the seven plugins**
 
 As a system assembler,
-I want to declare the six plugins as loader entries,
+I want to declare the seven plugins as loader entries,
 so that the kernel activates them in dependency order and unloads them
 completely.
 
 Acceptance criteria (EARS):
 
-- WHEN the six entries are reconciled THE system SHALL activate each plugin
+- WHEN the seven entries are reconciled THE system SHALL activate each plugin
   once its declared keys are satisfied. (Event-driven)
 - WHEN the tree is emptied THE system SHALL unload each plugin and run its
   effect inverse. (Event-driven)
@@ -190,7 +190,7 @@ memento keys:
 | agent | `chat-history`, `model-registry`, `llm-context` | `agent-loop` |
 | repl-chat | `agent-loop` | `repl` |
 
-**Entry.** `cmd/core-agent` registers the six compiled guests, composes them
+**Entry.** `cmd/core-agent` registers the seven compiled guests, composes them
 through the scheduler (`Insert` / `Inspect` / `Remove`), wires the agent
 layer — the tool manager as the host job service, the subagent tool over
 the agent guest, a waker per subscriber — drives the terminal session over
@@ -352,7 +352,7 @@ $ go test ./...
 ```
 
 `conformance/` holds the runner and the step definitions. Plugin scenarios
-execute the host-testable libraries; system scenarios compose the six plugins
+execute the host-testable libraries; system scenarios compose the seven plugins
 at the host level with the same declarations, transcript, and pipeline (fast
 and deterministic). The wasm ABI path — the real guests, the loader,
 bind/get/invoke — is exercised end to end by `cmd/core-agent`'s scripted
@@ -373,7 +373,7 @@ session test, and per-package Go tests cover each library beside its code.
 
 ## Non-Goals
 
-Extras beyond the six plugins and the agent layer; local patches to memento
+Extras beyond the seven plugins and the agent layer; local patches to memento
 (changes go upstream); loading or unloading plugins from inside the REPL;
 discussion merge orchestration; persistence of jobs, history, or credentials;
 cross-process or out-of-tree composition; any layout beyond `plugins/`,
@@ -395,7 +395,7 @@ cross-process or out-of-tree composition; any layout beyond `plugins/`,
   REPL does not load or unload plugins in the first cut: composition is the
   loader's job, exercised from `cmd/`; repl-chat's spec records this decision.
   (Charter open question 3.)
-- **D5 — Shared key registry.** All six components register against one
+- **D5 — Shared key registry.** All seven components register against one
   `wasm.KeyRegistry`, so injection satisfaction and provider identity work
   across plugins; each guest binds its provided values through the ABI, so the
   registration is the guest's own tracked effect.

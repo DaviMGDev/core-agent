@@ -8,7 +8,7 @@ Feature: The REPL session
   Rule: The session protocol
 
     Scenario: Session start
-      Given the system is composed with the six plugins and nickname "agent"
+      Given the system is composed with the seven plugins and nickname "agent"
       When the session starts
       Then the transcript announces "repl: agent joined"
       And the transcript shows the prompt "you> "
