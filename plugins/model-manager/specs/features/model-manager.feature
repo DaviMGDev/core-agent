@@ -80,3 +80,29 @@ Feature: model-manager views and resolution
       When the model "fast" is asked to respond
       Then the answer comes from "gpt"
       And the answer text is "mock(gpt) (context:0)"
+
+  Rule: The provider request offers the presented tool surface
+
+    Scenario: The request carries the tools array for a non-empty surface
+      Given a registry with view "fast" as alias of "gpt"
+      When the model "fast" is asked to respond with tools "subagent" and "read"
+      Then the provider request carries a tools array with "subagent" and "read"
+
+    Scenario: The tools field is omitted for an empty surface
+      Given a registry with view "fast" as alias of "gpt"
+      When the model "fast" is asked to respond with no tools
+      Then the provider request carries no tools field
+
+  Rule: A native tool call becomes the directive
+
+    Scenario: A tool_calls answer normalizes to the directive
+      Given a registry with view "fast" as alias of "gpt"
+      And the provider answers with a tool call "subagent" with arguments {"brief":"sum"}
+      When the model "fast" is asked to respond with tools "subagent"
+      Then the answer text is the directive {"tool":"subagent","args":{"brief":"sum"}}
+
+    Scenario: Several tool calls take the first
+      Given a registry with view "fast" as alias of "gpt"
+      And the provider answers with tool calls "read" and "write"
+      When the model "fast" is asked to respond with tools "read" and "write"
+      Then the answer names the tool "read"

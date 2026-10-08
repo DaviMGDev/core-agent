@@ -179,6 +179,15 @@ func ParseConfig(payload []byte) ([]View, error) {
 	return c.Models, nil
 }
 
+// Tool is one callable of the agent's presented surface, crossing as a JSON
+// wire shape — name, description, parameters — so this package stays
+// independent of the agent's library.
+type Tool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
 // Op is one operation requested over the view registry.
 type Op struct {
 	Kind    string           `json:"op"`
@@ -186,6 +195,7 @@ type Op struct {
 	Model   string           `json:"model,omitempty"`
 	Text    string           `json:"text,omitempty"`
 	Context []ContextMessage `json:"context,omitempty"`
+	Tools   []Tool           `json:"tools,omitempty"`
 }
 
 // ContextMessage is one turn supplied as context to a response.
@@ -203,9 +213,11 @@ type Result struct {
 }
 
 // Caller performs one model completion. The implementation owns provider
-// resolution and transport; the registry owns view resolution.
+// resolution and transport; the registry owns view resolution. Tools is the
+// agent's presented surface: the caller offers it to the provider natively
+// when non-empty.
 type Caller interface {
-	Complete(model string, messages []ContextMessage) (string, error)
+	Complete(model string, messages []ContextMessage, tools []Tool) (string, error)
 }
 
 // MockCaller answers without a provider: it echoes the model, the last user
@@ -213,8 +225,9 @@ type Caller interface {
 // the LLM by config alone — a provider marked mock — with no network at all.
 type MockCaller struct{}
 
-// Complete returns the deterministic mock reply.
-func (MockCaller) Complete(model string, messages []ContextMessage) (string, error) {
+// Complete returns the deterministic mock reply. The mock ignores the tool
+// surface: the text-directive path stays for mock and scripted providers.
+func (MockCaller) Complete(model string, messages []ContextMessage, tools []Tool) (string, error) {
 	text := ""
 	for _, m := range messages {
 		if strings.EqualFold(m.Role, "user") {
@@ -257,7 +270,7 @@ func Apply(r *Registry, op Op, caller Caller) (Result, error) {
 		if res.Mode == ModeFallback {
 			var lastErr error
 			for _, model := range res.Models {
-				text, err := caller.Complete(model, op.Context)
+				text, err := caller.Complete(model, op.Context, op.Tools)
 				if err == nil {
 					return Result{Model: model, Text: text}, nil
 				}
@@ -265,7 +278,7 @@ func Apply(r *Registry, op Op, caller Caller) (Result, error) {
 			}
 			return Result{}, fmt.Errorf("model-manager: fallback %q exhausted: %w", op.Model, lastErr)
 		}
-		text, err := caller.Complete(res.Models[0], op.Context)
+		text, err := caller.Complete(res.Models[0], op.Context, op.Tools)
 		if err != nil {
 			return Result{}, err
 		}

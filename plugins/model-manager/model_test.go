@@ -1,6 +1,7 @@
 package modelmanager
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -167,10 +168,12 @@ func TestParseConfig(t *testing.T) {
 // stubCaller records the models it was asked for and answers deterministically.
 type stubCaller struct {
 	calls  []string
+	tools  []Tool
 	failOn map[string]bool
 }
 
-func (c *stubCaller) Complete(model string, messages []ContextMessage) (string, error) {
+func (c *stubCaller) Complete(model string, messages []ContextMessage, tools []Tool) (string, error) {
+	c.tools = tools
 	c.calls = append(c.calls, model)
 	if c.failOn[model] {
 		return "", errors.New("call failed: " + model)
@@ -245,13 +248,34 @@ func TestApplyFallbackExhaustionFails(t *testing.T) {
 	}
 }
 
+func TestApplyHandsToolsToTheCaller(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(View{Name: "fast", Alias: "llama"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	tools := []Tool{
+		{Name: "subagent", Description: "call an agent", Parameters: json.RawMessage(`{"type":"object","required":["brief"]}`)},
+		{Name: "read"},
+	}
+	caller := &stubCaller{}
+	if _, err := Apply(r, Op{Kind: "respond", Model: "fast", Text: "hi", Tools: tools}, caller); err != nil {
+		t.Fatalf("Apply(respond): %v", err)
+	}
+	if !reflect.DeepEqual(caller.tools, tools) {
+		t.Fatalf("caller tools = %+v, want the op's surface handed through", caller.tools)
+	}
+	if _, err := Apply(r, Op{Kind: "respond", Model: "fast", Text: "hi", Tools: tools}, MockCaller{}); err != nil {
+		t.Fatalf("Apply(respond, mock): %v — the mock caller must accept a tool surface", err)
+	}
+}
+
 func TestMockCallerEchoesModelAndContext(t *testing.T) {
 	caller := MockCaller{}
 	got, err := caller.Complete("gpt", []ContextMessage{
 		{Role: "user", Text: "first"},
 		{Role: "assistant", Text: "reply"},
 		{Role: "user", Text: "second"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -259,7 +283,7 @@ func TestMockCallerEchoesModelAndContext(t *testing.T) {
 		t.Fatalf("Complete = %q, want %q", got, want)
 	}
 
-	got, err = caller.Complete("gpt", nil)
+	got, err = caller.Complete("gpt", nil, nil)
 	if err != nil {
 		t.Fatalf("Complete(empty): %v", err)
 	}
@@ -267,7 +291,7 @@ func TestMockCallerEchoesModelAndContext(t *testing.T) {
 		t.Fatalf("Complete(empty) = %q, want %q", got, want)
 	}
 
-	got, err = caller.Complete("gpt", []ContextMessage{{Role: "assistant", Text: "only"}})
+	got, err = caller.Complete("gpt", []ContextMessage{{Role: "assistant", Text: "only"}}, nil)
 	if err != nil {
 		t.Fatalf("Complete(no user): %v", err)
 	}

@@ -1,7 +1,7 @@
 ---
 type: spec
 title: "model-manager — Plugin Specification"
-description: "Manages models as views — alias, fallback chain, or discussion group — resolved in dependency order with cycles refused."
+description: "Manages models as views — alias, fallback chain, or discussion group — resolved in dependency order with cycles refused; provider-native tool calls over the OpenAI-compatible tools array."
 tags: [spec, plugin]
 sections: [context, semantics, resolution, abi, conformance, non-goals, decisions]
 created: "2026-10-05"
@@ -61,21 +61,34 @@ the contract needs.
   an `alias` or a plain model answers with its one concrete model; a `discuss`
   group answers with its first participant, since merge orchestration is still
   deferred. A response without a caller is refused.
+- `respond` carries the agent's presented tool surface as `tools` — a JSON
+  wire shape of `{name, description, parameters}` per callable — and hands it
+  to the caller unchanged, so the provider can offer the tools natively. The
+  package keeps its own shape and never imports the agent's library.
+- A provider answer carrying `tool_calls` normalizes to the first call as the
+  text `{"tool": <name>, "args": <arguments>}` — the agent's existing
+  directive — so a native call runs through the same path as a text
+  directive. A `tool_calls` answer yields at most one call; further calls in
+  the same answer are dropped.
 
 ## ABI
 
 - Exports: `memento_declare`, `memento_activate`, `memento_revert_effect`,
   `memento_alloc`, `memento_handle`, `memory`.
 - Imports: `memento.declare_inject`, `memento.declare_provide`,
-  `memento.bind`, `memento.get_len`, `memento.get`, `memento.http_request`,
+  `memento.bind`, `memento.invoke`, `memento.http_request`,
   `memento.http_response_len`, `memento.http_response`,
   `memento.get_payload_len`, `memento.get_payload`, `memento.register_effect`,
   `memento.log`.
 - Declares: provides `model-registry`; injects `provider-registry`.
 - Binds: `model-registry` ← the activation payload (the view configuration
   document), as a tracked, revertible registration.
-- Reads: `provider-registry` over `get_len`/`get` at activation, parsed into a
-  local shape so the package stays independent of provider-manager.
+- Reads: `provider-registry` over `invoke` on every response: the
+  `provider-for` operation maps the concrete model to its provider,
+  decoded into a local shape so the package stays independent of
+  provider-manager. No snapshot is kept — a provider registered after
+  activation serves the next response, and a model no provider serves
+  fails naming the model.
 - Transport: a response calls `http_request` with
   `{method, url, headers, body}` for `POST <endpoint>/chat/completions`,
   mapping context messages to `messages`. When the provider carries a
@@ -83,6 +96,12 @@ the contract needs.
   sent as `Authorization: Bearer`; a keyless provider sends no Authorization
   header. A provider error is reported with its status and body, so the
   failure reaches the transcript.
+- Tools: when `respond` carries a non-empty surface, the request body
+  includes the OpenAI-compatible `tools` array — one
+  `{"type": "function", "function": {name, description, parameters}}`
+  entry per presented callable. The field is included only when the surface
+  is non-empty and omitted otherwise, so providers without tool support see
+  the same request as before.
 - Payload: JSON `{"models":[{"name","alias"|"fallback"|"discuss"}]}`.
 - Effect inverse on unload: `model-manager: model views released`.
 
@@ -116,3 +135,12 @@ view storage; the transport itself, which the loader owns.
   the same `Caller` seam and echoes the model, the last user message, and the
   context size. A provider marked `mock` routes to it in the guest, so the
   LLM is mocked by config alone, with no network and no server.
+- **MM6 — Native calls normalize to the directive.** The provider's
+  `tool_calls` answer becomes the text directive `{"tool", "args"}` inside
+  model-manager, so the agent's parse is the single call path and the
+  text-directive path stays for mock and scripted providers. One answer, one
+  call: the first tool call stands, the rest drop.
+- **MM7 — Live resolution.** The guest resolves the provider per response
+  through the registry's `provider-for` operation instead of the activation
+  snapshot, so late-registered providers serve calls and withdrawn ones fail
+  loudly. The injected key is still declared: `invoke` requires it.
