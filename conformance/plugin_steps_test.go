@@ -40,6 +40,14 @@ func registerPluginSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a provider "([^"]*)" at "([^"]*)" serving "([^"]*)" is registered$`, stepRegisterProviderServing)
 	sc.Step(`^"([^"]*)" is served by "([^"]*)"$`, stepServedBy)
 	sc.Step(`^"([^"]*)" has no provider$`, stepNoProvider)
+	sc.Step(`^a live provider registry$`, stepLiveProviderRegistry)
+	sc.Step(`^a live provider registry with provider "([^"]*)"$`, stepLiveProviderRegistryWithProvider)
+	sc.Step(`^an operation registers provider "([^"]*)" at "([^"]*)" serving "([^"]*)"$`, stepOperationRegistersProvider)
+	sc.Step(`^an operation unregisters provider "([^"]*)"$`, stepOperationUnregistersProvider)
+	sc.Step(`^the live registry lists "([^"]*)"$`, stepLiveRegistryLists)
+	sc.Step(`^the live registry does not list "([^"]*)"$`, stepLiveRegistryDoesNotList)
+	sc.Step(`^the operation "([^"]*)" for model "([^"]*)" returns "([^"]*)"$`, stepOperationProviderForReturns)
+	sc.Step(`^the operation "([^"]*)" for model "([^"]*)" returns not found$`, stepOperationProviderForNotFound)
 
 	// model-manager
 	sc.Step(`^an empty model registry$`, stepEmptyModelRegistry)
@@ -740,6 +748,128 @@ func stepNoProvider(ctx context.Context, model string) error {
 	}
 	if p, ok := w.providers.ProviderFor(model); ok {
 		return fmt.Errorf("ProviderFor(%q) = %+v, want no provider", model, p)
+	}
+	return nil
+}
+
+// --- live registry operations ------------------------------------------------
+// Plugin conformance exercises the host-testable libraries: these steps
+// drive the same Apply path the provider-manager guest's handler serves.
+
+func stepLiveProviderRegistry(ctx context.Context) error {
+	w := worldFrom(ctx)
+	w.providers = providermanager.NewRegistry()
+	return nil
+}
+
+func stepLiveProviderRegistryWithProvider(ctx context.Context, name string) error {
+	if err := stepLiveProviderRegistry(ctx); err != nil {
+		return err
+	}
+	return stepOperationRegistersProvider(ctx, name, "https://late.example/v1", "model-x")
+}
+
+func stepOperationRegistersProvider(ctx context.Context, name, endpoint, model string) error {
+	w := worldFrom(ctx)
+	if w.providers == nil {
+		w.providers = providermanager.NewRegistry()
+	}
+	res, err := providermanager.Apply(w.providers, providermanager.Op{
+		Kind: "register",
+		Provider: providermanager.Provider{
+			Name:       name,
+			Endpoint:   endpoint,
+			Credential: "env:TEST_KEY",
+			Models:     []string{model},
+		},
+	})
+	if err != nil || !res.Ok {
+		w.err = err
+		if err == nil {
+			w.err = fmt.Errorf("register %q not ok: %+v", name, res)
+		}
+	}
+	return nil
+}
+
+func stepOperationUnregistersProvider(ctx context.Context, name string) error {
+	w := worldFrom(ctx)
+	res, err := providermanager.Apply(w.providers, providermanager.Op{Kind: "unregister", Name: name})
+	if err != nil || !res.Ok {
+		w.err = err
+		if err == nil {
+			w.err = fmt.Errorf("unregister %q not ok: %+v", name, res)
+		}
+	}
+	return nil
+}
+
+func stepLiveRegistryLists(ctx context.Context, name string) error {
+	w := worldFrom(ctx)
+	if w.err != nil {
+		return fmt.Errorf("operation failed: %w", w.err)
+	}
+	res, err := providermanager.Apply(w.providers, providermanager.Op{Kind: "list"})
+	if err != nil || !res.Ok {
+		return fmt.Errorf("list failed: %v (%+v)", err, res)
+	}
+	for _, p := range res.Providers {
+		if p.Name == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("live list = %v, want %q present", res.Providers, name)
+}
+
+func stepLiveRegistryDoesNotList(ctx context.Context, name string) error {
+	w := worldFrom(ctx)
+	if w.err != nil {
+		return fmt.Errorf("operation failed: %w", w.err)
+	}
+	res, err := providermanager.Apply(w.providers, providermanager.Op{Kind: "list"})
+	if err != nil || !res.Ok {
+		return fmt.Errorf("list failed: %v (%+v)", err, res)
+	}
+	for _, p := range res.Providers {
+		if p.Name == name {
+			return fmt.Errorf("live list still contains %q", name)
+		}
+	}
+	return nil
+}
+
+func stepOperationProviderForReturns(ctx context.Context, op, model, name string) error {
+	w := worldFrom(ctx)
+	if w.err != nil {
+		return fmt.Errorf("operation failed: %w", w.err)
+	}
+	if op != "provider-for" {
+		return fmt.Errorf("unknown operation %q", op)
+	}
+	res, err := providermanager.Apply(w.providers, providermanager.Op{Kind: "provider-for", Model: model})
+	if err != nil || !res.Ok {
+		return fmt.Errorf("provider-for failed: %v (%+v)", err, res)
+	}
+	if !res.Found || res.Provider.Name != name {
+		return fmt.Errorf("provider-for(%q) = %+v, want %q", model, res, name)
+	}
+	return nil
+}
+
+func stepOperationProviderForNotFound(ctx context.Context, op, model string) error {
+	w := worldFrom(ctx)
+	if w.err != nil {
+		return fmt.Errorf("operation failed: %w", w.err)
+	}
+	if op != "provider-for" {
+		return fmt.Errorf("unknown operation %q", op)
+	}
+	res, err := providermanager.Apply(w.providers, providermanager.Op{Kind: "provider-for", Model: model})
+	if err != nil || !res.Ok {
+		return fmt.Errorf("provider-for failed: %v (%+v)", err, res)
+	}
+	if res.Found {
+		return fmt.Errorf("provider-for(%q) = %+v, want absent", model, res)
 	}
 	return nil
 }
