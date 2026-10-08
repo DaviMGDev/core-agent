@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/DaviMGDev/core-agent/internal/config"
+	"github.com/DaviMGDev/core-agent/plugins/agent"
 	"github.com/DaviMGDev/core-agent/plugins/subagent"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 )
@@ -465,3 +466,57 @@ func TestRunWithoutCredentialSendsNoAuthorization(t *testing.T) {
 		t.Fatalf("authorization = %q, want no header for a keyless provider", auth)
 	}
 }
+
+// TestComposedAgentConfigListsSubagentTool proves the entry injects the
+// registry's tools, schemas included, into the top-level agent payload so the
+// provider request carries the subagent tool natively.
+func TestComposedAgentConfigListsSubagentTool(t *testing.T) {
+	// Unit check: agentPayload merges the registry's tools and schemas.
+	reg := toolmanager.New(toolmanager.Options{}).Registry()
+	if err := reg.Declare(subagent.Tool(nil, nil, subagent.Options{})); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	raw, err := agentPayload(`{"conversation":"main","model":"fast"}`, reg)
+	if err != nil {
+		t.Fatalf("agentPayload: %v", err)
+	}
+	var cfg agent.Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("Unmarshal agent payload: %v", err)
+	}
+	if len(cfg.Tools) != 1 || cfg.Tools[0].Name != subagent.ToolName {
+		t.Fatalf("tools = %+v, want subagent tool present in agent payload", cfg.Tools)
+	}
+	if len(cfg.Tools[0].Parameters) == 0 || !strings.Contains(string(cfg.Tools[0].Parameters), "brief") {
+		t.Fatalf("subagent schema = %s, want brief parameter schema", cfg.Tools[0].Parameters)
+	}
+
+	// Host-composed check: running the composition carries the tool to the provider.
+	var (
+		mu   sync.Mutex
+		body string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = string(b)
+		mu.Unlock()
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"understood"}}]}`)
+	}))
+	defer srv.Close()
+
+	sessCfg := sessionFrom(t, testResolved(t), "tester")
+	sessCfg.providers = providerDoc(testProvider{Name: "local", Endpoint: srv.URL, Models: []string{"gemma4:cloud"}})
+
+	var out transcript
+	in := strings.NewReader("check tools\n:quit\n")
+	if err := runConfig(context.Background(), in, &out, sessCfg); err != nil {
+		t.Fatalf("runConfig: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, want := range []string{`"type":"function"`, `"name":"subagent"`, `"brief"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("provider request body missing %q:\n%s", want, body)

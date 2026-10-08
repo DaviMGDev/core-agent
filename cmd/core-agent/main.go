@@ -194,7 +194,6 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 
 	plugins := starterPlugins(cfg)
 	comps := make([]*wasm.WASMComponent, 0, len(plugins))
-	fibers := make([]mcontext.FiberID, 0, len(plugins))
 	for _, p := range plugins {
 		comp, err := wasm.NewComponent(ctx, engine, p.wasm,
 			wasm.WithKeyRegistry(keys),
@@ -204,16 +203,7 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 		if err != nil {
 			return fmt.Errorf("core-agent: %s: %w", p.ref, err)
 		}
-		id, err := sched.Insert(comp, p.payload)
-		if err != nil {
-			return fmt.Errorf("core-agent: %s: %w", p.ref, err)
-		}
 		comps = append(comps, comp)
-		fibers = append(fibers, id)
-	}
-
-	if err := waitActive(sched, fibers); err != nil {
-		return err
 	}
 
 	// The agent is the loop every caller reaches: the terminal invokes it, and
@@ -223,6 +213,28 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	agentComp := comps[len(comps)-2]
 	if err := manager.Registry().Declare(subagent.Tool(agentComp, manager, subagent.Options{Call: callGate})); err != nil {
 		return fmt.Errorf("core-agent: subagent tool: %w", err)
+	}
+
+	agentPayloadDoc, err := agentPayload(cfg.agent, manager.Registry())
+	if err != nil {
+		return err
+	}
+
+	fibers := make([]mcontext.FiberID, 0, len(plugins))
+	for i, p := range plugins {
+		payload := p.payload
+		if p.ref == "agent" {
+			payload = agentPayloadDoc
+		}
+		id, err := sched.Insert(comps[i], payload)
+		if err != nil {
+			return fmt.Errorf("core-agent: %s: %w", p.ref, err)
+		}
+		fibers = append(fibers, id)
+	}
+
+	if err := waitActive(sched, fibers); err != nil {
+		return err
 	}
 	for _, topic := range jobWakeTopics {
 		bus.Subscribe(topic, agentWaker{ctx: ctx, comp: agentComp, log: out, gate: callGate})
@@ -267,6 +279,38 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 		}
 	}
 	return waitGone(sched, fibers)
+}
+
+// agentPayload builds the top-level agent configuration: the resolved .core/
+// layer payload augmented with every tool currently in the registry, schemas
+// included. The entry injects the surface at composition so the top-level
+// agent can call tools natively.
+func agentPayload(raw string, registry *toolmanager.Registry) (string, error) {
+	var c agent.Config
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			return "", fmt.Errorf("core-agent: agent payload: %w", err)
+		}
+	}
+	existing := make(map[string]bool, len(c.Tools))
+	for _, t := range c.Tools {
+		existing[t.Name] = true
+	}
+	for _, t := range registry.Tools() {
+		if !existing[t.Name] {
+			c.Tools = append(c.Tools, agent.Tool{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.Schema,
+			})
+			existing[t.Name] = true
+		}
+	}
+	b, err := json.Marshal(c)
+	if err != nil {
+		return "", fmt.Errorf("core-agent: agent payload: %w", err)
+	}
+	return string(b), nil
 }
 
 // jobWakeTopics are the job events that wake the top-level agent. A start is
