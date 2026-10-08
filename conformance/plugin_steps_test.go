@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -60,6 +61,15 @@ func registerPluginSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the answer text is "([^"]*)"$`, stepAnswerText)
 	sc.Step(`^the response fails$`, stepResponseFails)
 	sc.Step(`^a mock provider "([^"]*)" serving "([^"]*)" is registered$`, stepRegisterMockProvider)
+	sc.Step(`^the model "([^"]*)" is asked to respond with tools "([^"]*)" and "([^"]*)"$`, stepAskToRespondWithTools)
+	sc.Step(`^the model "([^"]*)" is asked to respond with tools "([^"]*)"$`, stepAskToRespondWithOneTool)
+	sc.Step(`^the model "([^"]*)" is asked to respond with no tools$`, stepAskToRespondWithNoTools)
+	sc.Step(`^the provider request carries a tools array with "([^"]*)" and "([^"]*)"$`, stepProviderRequestCarriesTools)
+	sc.Step(`^the provider request carries no tools field$`, stepProviderRequestCarriesNoTools)
+	sc.Step(`^the provider answers with a tool call "([^"]*)" with arguments (.*)$`, stepProviderAnswersToolCall)
+	sc.Step(`^the provider answers with tool calls "([^"]*)" and "([^"]*)"$`, stepProviderAnswersTwoToolCalls)
+	sc.Step(`^the answer text is the directive (.*)$`, stepAnswerIsDirective)
+	sc.Step(`^the answer names the tool "([^"]*)"$`, stepAnswerNamesTool)
 
 	// chat-history
 	sc.Step(`^a conversation "([^"]*)"$`, stepConversation)
@@ -737,13 +747,146 @@ func stepNoProvider(ctx context.Context, model string) error {
 // --- model-manager response ------------------------------------------------
 
 // stubCaller stands in for the provider transport in library scenarios.
-type stubCaller struct{ failOn map[string]bool }
+type stubCaller struct {
+	failOn    map[string]bool
+	lastTools []modelmanager.Tool
+	answer    string
+}
 
-func (c *stubCaller) Complete(model string, _ []modelmanager.ContextMessage) (string, error) {
+func (c *stubCaller) Complete(model string, _ []modelmanager.ContextMessage, tools []modelmanager.Tool) (string, error) {
+	c.lastTools = tools
 	if c.failOn[model] {
 		return "", fmt.Errorf("call %s failed", model)
 	}
+	if c.answer != "" {
+		return c.answer, nil
+	}
 	return "answer from " + model, nil
+}
+
+func stepAskToRespondWithTools(ctx context.Context, model, first, second string) error {
+	w := worldFrom(ctx)
+	stub, _ := w.caller.(*stubCaller)
+	if stub == nil {
+		stub = &stubCaller{}
+		w.caller = stub
+	}
+	tools := []modelmanager.Tool{
+		{Name: first, Description: "tool " + first, Parameters: json.RawMessage(`{}`)},
+		{Name: second, Description: "tool " + second, Parameters: json.RawMessage(`{}`)},
+	}
+	w.answer, w.err = modelmanager.Apply(w.models, modelmanager.Op{Kind: "respond", Model: model, Tools: tools}, stub)
+	return nil
+}
+
+func stepAskToRespondWithOneTool(ctx context.Context, model, tool string) error {
+	w := worldFrom(ctx)
+	stub, _ := w.caller.(*stubCaller)
+	if stub == nil {
+		stub = &stubCaller{}
+		w.caller = stub
+	}
+	tools := []modelmanager.Tool{
+		{Name: tool, Description: "tool " + tool, Parameters: json.RawMessage(`{}`)},
+	}
+	w.answer, w.err = modelmanager.Apply(w.models, modelmanager.Op{Kind: "respond", Model: model, Tools: tools}, stub)
+	return nil
+}
+
+func stepAskToRespondWithNoTools(ctx context.Context, model string) error {
+	w := worldFrom(ctx)
+	stub, _ := w.caller.(*stubCaller)
+	if stub == nil {
+		stub = &stubCaller{}
+		w.caller = stub
+	}
+	w.answer, w.err = modelmanager.Apply(w.models, modelmanager.Op{Kind: "respond", Model: model}, stub)
+	return nil
+}
+
+func stepProviderRequestCarriesTools(ctx context.Context, first, second string) error {
+	w := worldFrom(ctx)
+	stub, _ := w.caller.(*stubCaller)
+	if stub == nil {
+		return fmt.Errorf("no caller recorded")
+	}
+	tools := modelmanager.OpenAITools(stub.lastTools)
+	if len(tools) != 2 || tools[0].Function.Name != first || tools[1].Function.Name != second {
+		return fmt.Errorf("openAI tools = %+v, want %q and %q", tools, first, second)
+	}
+	return nil
+}
+
+func stepProviderRequestCarriesNoTools(ctx context.Context) error {
+	w := worldFrom(ctx)
+	stub, _ := w.caller.(*stubCaller)
+	if stub == nil {
+		return fmt.Errorf("no caller recorded")
+	}
+	tools := modelmanager.OpenAITools(stub.lastTools)
+	if len(tools) != 0 {
+		return fmt.Errorf("openAI tools = %+v, want none", tools)
+	}
+	return nil
+}
+
+func stepProviderAnswersToolCall(ctx context.Context, tool, args string) error {
+	w := worldFrom(ctx)
+	stub, _ := w.caller.(*stubCaller)
+	if stub == nil {
+		stub = &stubCaller{}
+		w.caller = stub
+	}
+	call := modelmanager.ToolCall{Type: "function"}
+	call.Function.Name = tool
+	call.Function.Arguments = args
+	text, ok := modelmanager.DirectiveFromToolCalls([]modelmanager.ToolCall{call})
+	if !ok {
+		return fmt.Errorf("failed to make directive")
+	}
+	stub.answer = text
+	return nil
+}
+
+func stepProviderAnswersTwoToolCalls(ctx context.Context, first, second string) error {
+	w := worldFrom(ctx)
+	stub, _ := w.caller.(*stubCaller)
+	if stub == nil {
+		stub = &stubCaller{}
+		w.caller = stub
+	}
+	call1 := modelmanager.ToolCall{Type: "function"}
+	call1.Function.Name = first
+	call2 := modelmanager.ToolCall{Type: "function"}
+	call2.Function.Name = second
+	text, ok := modelmanager.DirectiveFromToolCalls([]modelmanager.ToolCall{call1, call2})
+	if !ok {
+		return fmt.Errorf("failed to make directive")
+	}
+	stub.answer = text
+	return nil
+}
+
+func stepAnswerIsDirective(ctx context.Context, text string) error {
+	w := worldFrom(ctx)
+	if w.answer.Text != text {
+		return fmt.Errorf("answer text = %q, want directive %q", w.answer.Text, text)
+	}
+	return nil
+}
+
+func stepAnswerNamesTool(ctx context.Context, tool string) error {
+	w := worldFrom(ctx)
+	var d struct {
+		Tool string `json:"tool"`
+	}
+	if err := json.Unmarshal([]byte(w.answer.Text), &d); err != nil {
+		return fmt.Errorf("answer %q not valid directive: %w", w.answer.Text, err)
+	}
+	if d.Tool != tool {
+		return fmt.Errorf("directive tool = %q, want %q", d.Tool, tool)
+	}
+	return nil
 }
 
 func stepAskToRespond(ctx context.Context, model string) error {
