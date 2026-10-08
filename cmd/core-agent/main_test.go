@@ -624,3 +624,74 @@ func TestRunNativeToolCallsSessionSubagent(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("runConfig: %v", err)
 	}
+
+	got := out.String()
+	if strings.Contains(got, "\ncounted 42 items\n") {
+		t.Fatalf("child's private message leaked to transcript:\n%s", got)
+	}
+}
+
+// TestRealGemmaDelegation exercises the real gemma4:cloud model (when auth is
+// present) and verifies that asking it to delegate calls the subagent tool and
+// returns the reply.
+func TestRealGemmaDelegation(t *testing.T) {
+	cfg, err := loadSession(false, "tester")
+	if err != nil {
+		t.Fatalf("loadSession: %v", err)
+	}
+	managerReady := make(chan *toolmanager.Manager, 1)
+	cfg.onComposed = func(m *toolmanager.Manager) { managerReady <- m }
+
+	var out transcript
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- runConfig(context.Background(), pr, &out, cfg) }()
+
+	manager := <-managerReady
+	waitTranscript := func(marker string, timeout time.Duration) {
+		t.Helper()
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			if strings.Contains(out.String(), marker) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("transcript missing %q within %v:\n%s", marker, timeout, out.String())
+	}
+
+	// Wait for the session to be ready
+	waitTranscript("repl: tester joined", 10*time.Second)
+
+	// Instruct the model to call the subagent tool
+	prompt := "Call the subagent tool with brief: what is 7 plus 5?\n"
+	if _, err := pw.Write([]byte(prompt)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Wait for the delegated reply (12)
+	waitTranscript("12", 45*time.Second)
+
+	// Verify a subagent job was started and finished
+	var foundSubagentJob bool
+	for _, j := range manager.Jobs() {
+		if j.Tool() == subagent.ToolName {
+			foundSubagentJob = true
+			if st := j.State(); st != toolmanager.StateDone {
+				t.Fatalf("subagent job state = %s, want done", st)
+			}
+		}
+	}
+	if !foundSubagentJob {
+		t.Fatalf("no subagent job was started; jobs = %+v", manager.Jobs())
+	}
+
+	if _, err := pw.Write([]byte(":quit\n")); err != nil {
+		t.Fatalf("write :quit: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("runConfig: %v", err)
+	}
+}
+
+
