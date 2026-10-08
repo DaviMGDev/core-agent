@@ -1,7 +1,7 @@
 ---
 type: spec
 title: "agent — Plugin Specification"
-description: "The turn loop split out of repl-chat: wake to quiescence, at most one chat.message, jobs as tools, own context, agent-owned presentation."
+description: "The turn loop split out of repl-chat: wake to quiescence, at most one chat.message, jobs as tools, own context, agent-owned presentation, provider-native tool calls."
 tags: [spec, plugin]
 sections: [context, semantics, presentation, abi, conformance, non-goals, decisions]
 created: "2026-10-06"
@@ -26,9 +26,16 @@ injects `chat-history`, `model-registry`, and `llm-context`.
   outcome and speech is the model's call, not the host's.
 - A turn yields at most one `chat.message`. A tool call starts a job and ends
   the turn without a message; the job's completion or a tick wakes the next
-  turn.
+  turn. A turn yields at most one job: a provider answer carrying several
+  tool calls takes its first.
 - A model answer whose text parses as a JSON directive (`tool`, `silence`)
-  carries the call; any other text is speech.
+  carries the call; any other text is speech. A provider-native `tool_calls`
+  answer reaches the agent already normalized to that same directive
+  (model-manager's contract), so the directive is the single call path —
+  the agent never parses provider wire shapes itself.
+- A renamed callable's call maps back to the registry name before the job
+  starts: the model speaks in presented labels, the job runs the registry's
+  tool.
 - Every agent works on its own conversation id and budget, provided by
   context-manager; the turn's projection is bounded.
 
@@ -38,6 +45,13 @@ The agent chooses what the model sees this turn: configured tools only,
 hidden ones pruned, renamed ones relabeled. It never invents a callable the
 registry does not hold — the configured surface is the registry's contents as
 the assembler wired them.
+
+Every presented callable carries its argument schema: the surface is
+`{name, description, parameters}` per tool, and the schema travels with the
+label through hiding and renaming — presentation relabels, it never rewrites
+a schema. The agent hands the presented surface to model-manager on every
+turn, and sends nothing else: no hidden tools, no registry names behind a
+rename, no tools the configuration does not list.
 
 ## ABI
 
@@ -52,6 +66,11 @@ the assembler wired them.
   `chat-history`, `model-registry`, `llm-context`.
 - Handler: `{"line": ...}` for a terminal wake or `{"events": [...]}` for a
   bus wake; answers `{"text": ...}` or `{"job": ...}`.
+- The `respond` operation carries the presented surface as `tools` — a JSON
+  wire shape of `{name, description, parameters}` per callable — so the
+  provider request can offer the tools natively; the answer comes back as
+  text, with a native `tool_calls` answer already normalized to the
+  `{"tool", "args"}` directive.
 - A wake may carry `{"config": {...}}` — the turn's configuration, used for
   that wake only: a subagent's own conversation, model, budget, and tool
   surface. It may carry `{"dump": true}`, and the answer then includes
@@ -87,3 +106,11 @@ implementation; model transport.
   agent's default; a wake may override it for its turn, which is how one
   implementation serves the top-level agent and every subagent without
   subagent-specific code.
+- **A6 — The directive is the single call path.** Provider-native function
+  calling is normalized to the `{"tool", "args"}` directive before the
+  answer reaches the agent; the text-directive path stays for mock and
+  scripted providers, and the agent holds no provider-specific parse.
+- **A7 — Presentation owns the rename, both ways.** The presented label is
+  what the model sees and says; the agent reverse-maps an alias to the
+  registry name before starting the job, so the registry never learns the
+  label.

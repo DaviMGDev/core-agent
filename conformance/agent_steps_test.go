@@ -66,6 +66,10 @@ func registerAgentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the tools are presented$`, stepPresentTools)
 	sc.Step(`^the model sees "([^"]*)" and "([^"]*)"$`, stepSeesBoth)
 	sc.Step(`^the model sees "([^"]*)" only$`, stepSeesOnly)
+	sc.Step(`^an agent with tool "([^"]*)" with an argument schema$`, stepAgentToolWithSchema)
+	sc.Step(`^the model sees "([^"]*)" with its argument schema$`, stepSeesWithSchema)
+	sc.Step(`^an agent with tool "([^"]*)" renamed to "([^"]*)"$`, stepAgentToolRenamed)
+	sc.Step(`^the model calls the tool "([^"]*)"$`, stepModelCallsTool)
 }
 
 func agentWorld(ctx context.Context) (*world, *agentRecorder) {
@@ -180,5 +184,33 @@ func stepSeesOnly(ctx context.Context, name string) error {
 	if len(rec.presented) != 1 || rec.presented[0].Name != name {
 		return fmt.Errorf("presented = %+v, want %q only", rec.presented, name)
 	}
+	return nil
+}
+
+func stepAgentToolWithSchema(ctx context.Context, tool string) error {
+	w, _ := agentWorld(ctx)
+	schema := json.RawMessage(`{"type":"object","properties":{"brief":{"type":"string"}}}`)
+	w.agentCfg.Tools = []agent.Tool{{Name: tool, Parameters: schema}}
+	return nil
+}
+
+func stepSeesWithSchema(ctx context.Context, tool string) error {
+	_, rec := agentWorld(ctx)
+	if len(rec.presented) != 1 || rec.presented[0].Name != tool || len(rec.presented[0].Parameters) == 0 {
+		return fmt.Errorf("presented = %+v, want %q with schema", rec.presented, tool)
+	}
+	return nil
+}
+
+func stepAgentToolRenamed(ctx context.Context, tool, alias string) error {
+	w, _ := agentWorld(ctx)
+	w.agentCfg.Tools = []agent.Tool{{Name: tool}}
+	w.agentCfg.Renamed = map[string]string{tool: alias}
+	return nil
+}
+
+func stepModelCallsTool(ctx context.Context, tool string) error {
+	_, rec := agentWorld(ctx)
+	rec.answer = agent.Answer{Tool: tool, Args: json.RawMessage(`{}`)}
 	return nil
 }

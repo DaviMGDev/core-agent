@@ -40,3 +40,16 @@ Feature: Agent — the turn loop
       Given an agent with tools "read" and "bash", hiding "bash" and renaming "read" to "load"
       When the tools are presented
       Then the model sees "load" only
+
+    Scenario: The presented surface carries argument schemas
+      Given an agent with tool "subagent" with an argument schema
+      When the tools are presented
+      Then the model sees "subagent" with its argument schema
+
+  Rule: A renamed call runs the registry's tool
+
+    Scenario: A call by the presented label starts the registry's tool
+      Given an agent with tool "subagent" renamed to "delegate"
+      And the model calls the tool "delegate"
+      When a user line wakes the agent
+      Then the turn starts one job for "subagent"

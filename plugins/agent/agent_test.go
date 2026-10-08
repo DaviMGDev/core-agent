@@ -11,6 +11,7 @@ type recordingDeps struct {
 	appended  []Message
 	published []string
 	jobs      []string
+	presented []Tool
 	answer    Answer
 }
 
@@ -27,6 +28,7 @@ func (r *recordingDeps) deps() Deps {
 			return msgs, nil
 		},
 		Respond: func(text string, context []Message, tools []Tool) (Answer, error) {
+			r.presented = tools
 			return r.answer, nil
 		},
 		StartJob: func(tool string, args json.RawMessage) (string, error) {
@@ -87,6 +89,47 @@ func TestToolCallEndsTheTurnWithoutAMessage(t *testing.T) {
 	}
 }
 
+func TestRenamedCallMapsBackToTheRegistryName(t *testing.T) {
+	r := &recordingDeps{answer: Answer{Tool: "delegate", Args: json.RawMessage(`{"brief":"sum"}`)}}
+	cfg := Config{
+		Tools:   []Tool{{Name: "subagent"}},
+		Renamed: map[string]string{"subagent": "delegate"},
+	}
+	res, err := RunTurn(cfg, "delegate this", r.deps())
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Job != "job-1" || len(r.jobs) != 1 || r.jobs[0] != "subagent" {
+		t.Fatalf("result = %+v, jobs = %v; want one job for the registry name subagent", res, r.jobs)
+	}
+}
+
+func TestRespondReceivesThePresentedSurface(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"brief":{"type":"string"}},"required":["brief"]}`)
+	r := &recordingDeps{answer: Answer{Text: "done"}}
+	cfg := Config{
+		Tools: []Tool{
+			{Name: "subagent", Description: "call an agent", Parameters: schema},
+			{Name: "bash"},
+		},
+		Hidden:  []string{"bash"},
+		Renamed: map[string]string{"subagent": "delegate"},
+	}
+	if _, err := RunTurn(cfg, "hi", r.deps()); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(r.presented) != 1 {
+		t.Fatalf("presented = %+v, want the one visible tool", r.presented)
+	}
+	tool := r.presented[0]
+	if tool.Name != "delegate" || tool.Description != "call an agent" {
+		t.Fatalf("presented = %+v, want the renamed label and its description", tool)
+	}
+	if string(tool.Parameters) != string(schema) {
+		t.Fatalf("presented parameters = %s, want the argument schema", tool.Parameters)
+	}
+}
+
 func TestParseAnswer(t *testing.T) {
 	if a := ParseAnswer(`{"tool":"read"}`); a.Tool != "read" {
 		t.Fatalf("directive = %+v, want tool read", a)
@@ -116,5 +159,28 @@ func TestPresentNeverInventsAndProjects(t *testing.T) {
 		if strings.HasPrefix(tool.Name, "invented") {
 			t.Fatalf("presented = %+v, must never invent tools", got)
 		}
+	}
+}
+
+func TestPresentCarriesParametersThroughHideAndRename(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"brief":{"type":"string"}},"required":["brief"]}`)
+	cfg := Config{
+		Tools: []Tool{
+			{Name: "subagent", Description: "call an agent", Parameters: schema},
+			{Name: "read", Description: "read a file", Parameters: json.RawMessage(`{"type":"object"}`)},
+			{Name: "bash", Parameters: json.RawMessage(`{"type":"object"}`)},
+		},
+		Hidden:  []string{"bash"},
+		Renamed: map[string]string{"subagent": "delegate"},
+	}
+	got := Present(cfg)
+	if len(got) != 2 || got[0].Name != "delegate" || got[1].Name != "read" {
+		t.Fatalf("presented = %+v, want delegate and read only", got)
+	}
+	if string(got[0].Parameters) != string(schema) {
+		t.Fatalf("renamed tool parameters = %s, want the schema traveling with the label", got[0].Parameters)
+	}
+	if string(got[1].Parameters) != `{"type":"object"}` {
+		t.Fatalf("kept tool parameters = %s, want them unchanged", got[1].Parameters)
 	}
 }

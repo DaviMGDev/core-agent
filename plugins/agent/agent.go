@@ -16,10 +16,13 @@ const (
 	DefaultBudget       = 10
 )
 
-// Tool is one callable the agent may present to the model.
+// Tool is one callable the agent may present to the model. Parameters is the
+// callable's argument schema (a JSON Schema document); it travels with the
+// label through hiding and renaming, so the model can call the tool natively.
 type Tool struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
 // Config is one agent's configuration: its own conversation, model, budget,
@@ -140,7 +143,7 @@ func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 		return TurnResult{}, err
 	}
 	if answer.Tool != "" {
-		job, err := deps.StartJob(answer.Tool, answer.Args)
+		job, err := deps.StartJob(resolveCall(cfg, answer.Tool), answer.Args)
 		if err != nil {
 			return TurnResult{}, err
 		}
@@ -179,6 +182,17 @@ func Present(cfg Config) []Tool {
 		out = append(out, t)
 	}
 	return out
+}
+
+// resolveCall maps a called label back to the registry name: the model
+// speaks in presented labels, the job runs the registry's tool.
+func resolveCall(cfg Config, called string) string {
+	for name, alias := range cfg.Renamed {
+		if alias == called {
+			return name
+		}
+	}
+	return called
 }
 
 // oneLine flattens embedded line breaks so a message is always one line.

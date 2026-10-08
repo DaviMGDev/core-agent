@@ -117,6 +117,7 @@ type turn struct {
 	Model        string          `json:"model,omitempty"`
 	Messages     []agent.Message `json:"messages,omitempty"`
 	Context      []agent.Message `json:"context,omitempty"`
+	Tools        []agent.Tool    `json:"tools,omitempty"`
 }
 
 // historyResult reads the messages field of history and context responses.
@@ -189,7 +190,7 @@ func deps(cfg agent.Config, publish bool) agent.Deps {
 			return res.Messages, nil
 		},
 		Respond: func(text string, context []agent.Message, tools []agent.Tool) (agent.Answer, error) {
-			raw, err := invokeJSON(modelKey, turn{Op: "respond", Model: cfg.Model, Text: text, Context: context})
+			raw, err := invokeJSON(modelKey, turn{Op: "respond", Model: cfg.Model, Text: text, Context: context, Tools: tools})
 			if err != nil {
 				return agent.Answer{}, err
 			}
