@@ -520,3 +520,72 @@ func TestComposedAgentConfigListsSubagentTool(t *testing.T) {
 	for _, want := range []string{`"type":"function"`, `"name":"subagent"`, `"brief"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("provider request body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestRunNativeToolCallsSessionSubagent proves end to end that a provider
+// returning OpenAI-compatible tool_calls drives a subagent delegation to
+// completion, and the completion wake produces the delegated speech.
+func TestRunNativeToolCallsSessionSubagent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		w.Header().Set("content-type", "application/json")
+		switch line := lastUserMessage(raw); {
+		case strings.HasPrefix(line, "delegate natively"):
+			_, _ = io.WriteString(w, `{
+				"choices": [{
+					"message": {
+						"role": "assistant",
+						"tool_calls": [{
+							"id": "call_sub_1",
+							"type": "function",
+							"function": {
+								"name": "subagent",
+								"arguments": "{\"brief\":\"count the items\"}"
+							}
+						}]
+					}
+				}]
+			}`)
+		case strings.HasPrefix(line, "count the items"):
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"counted 42 items"}}]}`)
+		case strings.HasPrefix(line, "job.completed"):
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"delegation finished: 42 items"}}]}`)
+		default:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"fallback"}}]}`)
+		}
+	}))
+	defer srv.Close()
+
+	sessCfg := sessionFrom(t, testResolved(t), "tester")
+	sessCfg.providers = providerDoc(testProvider{Name: "local", Endpoint: srv.URL, Models: []string{"gemma4:cloud"}})
+
+	var out transcript
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- runConfig(context.Background(), pr, &out, sessCfg) }()
+
+	waitTranscript := func(marker string) {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			if strings.Contains(out.String(), marker) {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("transcript missing %q:\n%s", marker, out.String())
+	}
+
+	if _, err := pw.Write([]byte("delegate natively\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitTranscript("delegation finished: 42 items")
+
+	if _, err := pw.Write([]byte(":quit\n")); err != nil {
+		t.Fatalf("write :quit: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("runConfig: %v", err)
+	}
