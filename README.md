@@ -31,12 +31,22 @@ user line → terminal (host-driven session) → agent-loop
 
 A tool call ends the turn: the agent starts a **job** (the manager owns the registry and the lifecycle), and the job's completion or tick wakes the agent through the bus — the LLM decides whether to speak. A **subagent** is a tool whose job drives a child agent loop with its own conversation, model, and budget; the reply comes back and the child's turns stay private. Killing a job is accepted at any point, honored at the next safe point, and kills its descendants.
 
+### Native tool calling and presentation
+
+Models call tools natively over OpenAI-compatible interfaces:
+
+- **Presented surface:** The registry's callables (`name`, `description`, argument `parameters` schema) reach the top-level agent at composition and children via `childConfig`.
+- **Presentation:** The agent controls what the model sees: configured tools only, hidden tools pruned, and renamed tools relabeled. Schemas travel intact through hiding and renaming. When a model calls an aliased tool label, the agent reverse-maps the name to the registry's name before starting the job.
+- **Provider transport:** When the presented surface is non-empty, `model-manager` carries the OpenAI-compatible `tools` array in the request body (omitted when empty).
+- **Normalization:** Provider responses carrying native `tool_calls` are normalized into the agent's `{"tool", "args"}` directive (the first call stands, further calls drop). The directive path remains identical for mock, scripted, and native providers alike.
+
 ## Starter plugins
 
 | Plugin | Injects | Provides | Role |
 |---|---|---|---|
-| `provider-manager` | — | `provider-registry` | providers: name, endpoint, credential reference, served models |
-| `model-manager` | `provider-registry` | `model-registry` | model views (alias, fallback chain, discussion group), cycles refused |
+| `provider-manager` | — | `provider-registry` | live provider registry: register, unregister, list, provider-for |
+| `provider-openai` | `provider-registry` | — | provider plugin: registers OpenAI-compatible provider at activation, reverts on unload |
+| `model-manager` | `provider-registry` | `model-registry` | model views (alias, fallback, discuss), resolves providers through the live registry |
 | `chat-history` | — | `chat-history` | conversation record: append and recent turns, keyed by conversation id |
 | `context-manager` | `chat-history` | `llm-context` | projects a conversation into a bounded context window |
 | `agent` | `chat-history`, `model-registry`, `llm-context` | `agent-loop` | the turn loop: one `chat.message` per turn, jobs as tools, its own context |
