@@ -21,6 +21,10 @@ import (
 const (
 	effectID   = 1
 	provideKey = "model-registry"
+	// registryKey is the injected provider-registry the provider-for
+	// operation is invoked on; registryRespCap bounds one lookup answer.
+	registryKey     = "provider-registry"
+	registryRespCap = 8192
 )
 
 var injectKeys = []string{"provider-registry"}
@@ -34,11 +38,8 @@ func declareProvide(ptr unsafe.Pointer, n uint32) int32
 //go:wasmimport memento bind
 func bindHost(keyPtr unsafe.Pointer, keyLen uint32, valPtr unsafe.Pointer, valLen uint32) int32
 
-//go:wasmimport memento get_len
-func getLen(keyPtr unsafe.Pointer, keyLen uint32) int32
-
-//go:wasmimport memento get
-func getHost(keyPtr unsafe.Pointer, keyLen uint32, bufPtr unsafe.Pointer, bufMax uint32) int32
+//go:wasmimport memento invoke
+func invokeHost(keyPtr unsafe.Pointer, keyLen uint32, reqPtr unsafe.Pointer, reqLen uint32, respPtr unsafe.Pointer, respMax uint32) int32
 
 //go:wasmimport memento get_payload_len
 func getPayloadLen() int32
@@ -78,21 +79,6 @@ func payload() []byte {
 	}
 	buf := make([]byte, n)
 	got := getPayload(unsafe.Pointer(&buf[0]), uint32(len(buf)))
-	if got <= 0 {
-		return nil
-	}
-	return buf[:got]
-}
-
-// injected returns the bytes bound at key in the committed view.
-func injected(key string) []byte {
-	kb := []byte(key)
-	n := getLen(unsafe.Pointer(&kb[0]), uint32(len(kb)))
-	if n <= 0 {
-		return nil
-	}
-	buf := make([]byte, n)
-	got := getHost(unsafe.Pointer(&kb[0]), uint32(len(kb)), unsafe.Pointer(&buf[0]), uint32(len(buf)))
 	if got <= 0 {
 		return nil
 	}
@@ -154,21 +140,15 @@ func mementoActivate() uint32 {
 			return 1
 		}
 	}
-	providers = nil
-	if raw := injected("provider-registry"); len(raw) > 0 {
-		var reg providerRegistry
-		if err := json.Unmarshal(raw, &reg); err != nil {
-			emit("model-manager: " + err.Error() + "\n")
-			return 1
-		}
-		providers = reg.Providers
-	}
+	// No provider snapshot: every response resolves its provider through
+	// the live registry, so late registrations serve and withdrawals fail
+	// loudly naming the model.
 	emit("model-manager: " + strconv.Itoa(len(views)) + " model view(s) ready\n")
 	return 0
 }
 
-// provider is one entry of the injected provider registry document. The
-// document crosses as JSON, so this package keeps its own shape and stays
+// provider is one entry of the provider registry. The registry crosses as
+// JSON operations, so this package keeps its own shape and stays
 // independent of provider-manager's library (system spec: isolation).
 type provider struct {
 	Name       string   `json:"name"`
@@ -178,34 +158,49 @@ type provider struct {
 	Mock       bool     `json:"mock"`
 }
 
-type providerRegistry struct {
-	Providers []provider `json:"providers"`
-}
-
-// providers caches the injected registry for the instance.
-var providers []provider
-
-// providerFor returns the first provider, in config order, that serves model.
+// providerFor resolves the provider serving model through the live
+// registry: one provider-for invoke per response, so a provider registered
+// after activation serves the next response and a withdrawn one fails
+// loudly naming the model. No snapshot is kept.
 func providerFor(model string) (provider, bool) {
-	for _, p := range providers {
-		for _, m := range p.Models {
-			if m == model {
-				return p, true
-			}
-		}
+	req, err := json.Marshal(struct {
+		Op    string `json:"op"`
+		Model string `json:"model"`
+	}{Op: "provider-for", Model: model})
+	if err != nil || len(req) == 0 {
+		return provider{}, false
 	}
-	return provider{}, false
+	kb := []byte(registryKey)
+	resp := make([]byte, registryRespCap)
+	n := invokeHost(
+		unsafe.Pointer(&kb[0]), uint32(len(kb)),
+		unsafe.Pointer(&req[0]), uint32(len(req)),
+		unsafe.Pointer(&resp[0]), uint32(len(resp)),
+	)
+	if n <= 0 {
+		return provider{}, false
+	}
+	var res struct {
+		Provider provider `json:"provider"`
+		Found    bool     `json:"found"`
+	}
+	if err := json.Unmarshal(resp[:n], &res); err != nil || !res.Found {
+		return provider{}, false
+	}
+	return res.Provider, true
 }
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model    string                      `json:"model"`
+	Messages []chatMessage               `json:"messages"`
+	Stream   bool                        `json:"stream"`
+	Tools    []modelmanager.FunctionTool `json:"tools,omitempty"`
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string                  `json:"role"`
+	Content   string                  `json:"content"`
+	ToolCalls []modelmanager.ToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatResponse struct {
@@ -232,19 +227,20 @@ type httpResponseDoc struct {
 // host substitutes, so the guest never holds a secret.
 type caller struct{}
 
-func (caller) Complete(model string, messages []modelmanager.ContextMessage) (string, error) {
+func (caller) Complete(model string, messages []modelmanager.ContextMessage, tools []modelmanager.Tool) (string, error) {
 	p, ok := providerFor(model)
 	if !ok {
 		return "", fmt.Errorf("model-manager: no provider serves model %q", model)
 	}
 	if p.Mock {
-		return modelmanager.MockCaller{}.Complete(model, messages)
+		return modelmanager.MockCaller{}.Complete(model, messages, tools)
 	}
 	msgs := make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
 		msgs = append(msgs, chatMessage{Role: m.Role, Content: m.Text})
 	}
-	body, err := json.Marshal(chatRequest{Model: model, Messages: msgs})
+	req := chatRequest{Model: model, Messages: msgs, Tools: modelmanager.OpenAITools(tools)}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return "", err
 	}
@@ -298,7 +294,11 @@ func decodeCompletion(providerName string, buf []byte) (string, error) {
 	if len(completion.Choices) == 0 {
 		return "", errors.New("model-manager: completion had no choices")
 	}
-	return completion.Choices[0].Message.Content, nil
+	message := completion.Choices[0].Message
+	if directive, ok := modelmanager.DirectiveFromToolCalls(message.ToolCalls); ok {
+		return directive, nil
+	}
+	return message.Content, nil
 }
 
 // registry is the module instance's view registry, serving handlers.
