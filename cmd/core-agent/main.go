@@ -1,9 +1,10 @@
 // Command core-agent drives the composed system.
 //
 // It registers the seven starter plugin guests with memento, composes one
-// fiber per plugin through the scheduler, drives the terminal session — the
-// host reads stdin and is woken for chat.message — and unloads on exit. The
-// entry drives the scheduler directly instead of the loader because the
+// fiber per plugin through the scheduler, and serves one of two surfaces: the
+// REPL (stdin/stdout, host-driven, woken for chat.message) or the TUI link
+// (JSON lines on stdin/stdout, system spec "TUI Link"). It unloads on exit.
+// The entry drives the scheduler directly instead of the loader because the
 // interactive session outlives the loader's quiescence window (the pattern
 // the kernel documents in examples/chat).
 package main
@@ -153,6 +154,7 @@ func starterPlugins(cfg sessionConfig) []plugin {
 func main() {
 	nick := flag.String("nick", "", "nickname the REPL announces")
 	mock := flag.Bool("mock", false, "answer with an in-process mock LLM instead of calling a provider")
+	tui := flag.Bool("tui", false, "serve the TUI link (JSON lines) on stdin/stdout instead of the REPL")
 	flag.Parse()
 
 	cfg, err := loadSession(*mock, *nick)
@@ -160,21 +162,62 @@ func main() {
 		fmt.Fprintln(os.Stderr, "core-agent:", err)
 		os.Exit(1)
 	}
-	if err := runConfig(context.Background(), os.Stdin, os.Stdout, cfg); err != nil {
+	ctx := context.Background()
+	if *tui {
+		// Guest logs go to stderr: stdout carries link lines only.
+		err = runLink(ctx, os.Stdin, os.Stdout, os.Stderr, cfg)
+	} else {
+		err = runConfig(ctx, os.Stdin, os.Stdout, cfg)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "core-agent:", err)
 		os.Exit(1)
 	}
 }
 
-// runConfig composes the seven plugins from cfg, drives one REPL session on
-// in/out, and unloads everything before returning. Egress is open; credential
-// references in request headers are resolved through the session's credential
-// resolver (the auth store or the host environment), so a guest holds a
-// reference and never a secret.
-func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConfig) error {
-	if cfg.nick == "" {
-		cfg.nick = config.DefaultNick
+// composedSession is one live composition: the seven plugins active on the
+// scheduler plus the host-side agent layer. A surface driver works the
+// session and closes it to unload.
+type composedSession struct {
+	ctx         context.Context
+	bus         *notifications.Bus
+	manager     *toolmanager.Manager
+	gate        *sync.Mutex
+	engine      *wasm.Engine
+	sched       *runtime.Scheduler
+	fibers      []mcontext.FiberID
+	agent       *wasm.WASMComponent
+	history     *wasm.WASMComponent
+	terminal    *wasm.WASMComponent
+	agentConfig agent.Config
+}
+
+// Close reclaims the jobs and unloads the tree. It is the only path that
+// ends a session; call it once.
+func (s *composedSession) Close() error {
+	s.manager.Close()
+	var unloadErr error
+	for i := len(s.fibers) - 1; i >= 0; i-- {
+		if err := s.sched.Remove(s.fibers[i]); err != nil {
+			unloadErr = fmt.Errorf("core-agent: unload fiber %d: %w", s.fibers[i], err)
+			break
+		}
 	}
+	if unloadErr == nil {
+		unloadErr = waitGone(s.sched, s.fibers)
+	}
+	s.sched.Close()
+	_ = s.engine.Close(s.ctx)
+	return unloadErr
+}
+
+// composeSession composes the seven plugins from cfg and wires the agent
+// layer: the tool manager as the host job service, the subagent tool over the
+// agent guest, and the shared call gate. Guest logs go to logs. Egress is
+// open; credential references in request headers are resolved through the
+// session's credential resolver (the auth store or the host environment), so
+// a guest holds a reference and never a secret.
+func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*composedSession, error) {
 	resolve := cfg.credentials
 	if resolve == nil {
 		resolve = os.LookupEnv
@@ -190,77 +233,108 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 		wasm.WithHostServices(busServices{bus: bus, manager: manager}),
 	)
 	if err != nil {
-		return fmt.Errorf("core-agent: engine: %w", err)
+		return nil, fmt.Errorf("core-agent: engine: %w", err)
 	}
-	defer engine.Close(ctx)
+	sched := runtime.New()
+	abort := func(err error) (*composedSession, error) {
+		sched.Close()
+		_ = engine.Close(ctx)
+		return nil, err
+	}
 
 	keys := wasm.NewKeyRegistry()
-	sched := runtime.New()
-	defer sched.Close()
-
 	plugins := starterPlugins(cfg)
-	comps := make([]*wasm.WASMComponent, 0, len(plugins))
+	byRef := make(map[string]*wasm.WASMComponent, len(plugins))
 	for _, p := range plugins {
 		comp, err := wasm.NewComponent(ctx, engine, p.wasm,
 			wasm.WithKeyRegistry(keys),
-			wasm.WithLogWriter(out),
+			wasm.WithLogWriter(logs),
 			wasm.WithModuleName(p.ref),
 		)
 		if err != nil {
-			return fmt.Errorf("core-agent: %s: %w", p.ref, err)
+			return abort(fmt.Errorf("core-agent: %s: %w", p.ref, err))
 		}
-		comps = append(comps, comp)
+		byRef[p.ref] = comp
 	}
 
 	// The agent is the loop every caller reaches: the terminal invokes it, and
 	// the host waker wakes it for its root jobs' events. The manager lists the
 	// subagent tool over it, so a delegation is a job whose runner drives the
 	// child's turns.
-	agentComp := comps[len(comps)-2]
+	agentComp := byRef["agent"]
 	if err := manager.Registry().Declare(subagent.Tool(agentComp, manager, subagent.Options{Call: callGate})); err != nil {
-		return fmt.Errorf("core-agent: subagent tool: %w", err)
+		return abort(fmt.Errorf("core-agent: subagent tool: %w", err))
 	}
 
 	agentPayloadDoc, err := agentPayload(cfg.agent, manager.Registry())
 	if err != nil {
-		return err
+		return abort(err)
 	}
 
 	fibers := make([]mcontext.FiberID, 0, len(plugins))
-	for i, p := range plugins {
+	for _, p := range plugins {
 		payload := p.payload
 		if p.ref == "agent" {
 			payload = agentPayloadDoc
 		}
-		id, err := sched.Insert(comps[i], payload)
+		id, err := sched.Insert(byRef[p.ref], payload)
 		if err != nil {
-			return fmt.Errorf("core-agent: %s: %w", p.ref, err)
+			return abort(fmt.Errorf("core-agent: %s: %w", p.ref, err))
 		}
 		fibers = append(fibers, id)
 	}
 
 	if err := waitActive(sched, fibers); err != nil {
-		return err
+		return abort(err)
 	}
-	for _, topic := range jobWakeTopics {
-		bus.Subscribe(topic, agentWaker{ctx: ctx, comp: agentComp, log: out, gate: callGate})
+	var agentCfg agent.Config
+	if err := json.Unmarshal([]byte(agentPayloadDoc), &agentCfg); err != nil {
+		return abort(fmt.Errorf("core-agent: agent payload: %w", err))
 	}
 	if cfg.onComposed != nil {
 		cfg.onComposed(manager)
+	}
+	return &composedSession{
+		ctx:         ctx,
+		bus:         bus,
+		manager:     manager,
+		gate:        callGate,
+		engine:      engine,
+		sched:       sched,
+		fibers:      fibers,
+		agent:       agentComp,
+		history:     byRef["chat-history"],
+		terminal:    byRef["repl-chat"],
+		agentConfig: agentCfg,
+	}, nil
+}
+
+// runConfig drives one REPL session on in/out over a composed session, as
+// D15 describes: the host reads stdin, the terminal guest is woken for every
+// chat.message, and the tree unloads before returning.
+func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConfig) error {
+	if cfg.nick == "" {
+		cfg.nick = config.DefaultNick
+	}
+	s, err := composeSession(ctx, cfg, out)
+	if err != nil {
+		return err
+	}
+	for _, topic := range jobWakeTopics {
+		s.bus.Subscribe(topic, agentWaker{ctx: ctx, comp: s.agent, log: out, gate: s.gate})
 	}
 
 	// The terminal guest is woken for every chat.message — a prompted reply
 	// and an unprompted message take the same path — while the host drives
 	// the session loop; the guest's module lock is free between wakes.
-	terminal := comps[len(comps)-1]
-	sub := bus.Subscribe(notifications.TopicChatMessage, terminalWaker{ctx: ctx, comp: terminal, log: out})
+	sub := s.bus.Subscribe(notifications.TopicChatMessage, terminalWaker{ctx: ctx, comp: s.terminal, log: out})
 	session := replchat.New(cfg.nick)
-	emit := func(s string) { _, _ = out.Write([]byte(s)) }
+	emit := func(text string) { _, _ = out.Write([]byte(text)) }
 	if err := session.Run(in, emit, func(line string) (string, error) {
 		// The terminal's line reaches the agent, so it takes the same gate.
-		callGate.Lock()
-		answer, err := invokeTerminal(ctx, terminal, replchat.Wake{Line: line})
-		callGate.Unlock()
+		s.gate.Lock()
+		answer, err := invokeTerminal(ctx, s.terminal, replchat.Wake{Line: line})
+		s.gate.Unlock()
 		if err != nil {
 			return "", err
 		}
@@ -272,19 +346,11 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 		sub.WaitIdle()
 		return "", nil
 	}); err != nil {
+		_ = s.Close()
 		return fmt.Errorf("core-agent: session: %w", err)
 	}
 	sub.WaitIdle()
-
-	// Reclaim the jobs before unloading the guests they call into.
-	manager.Close()
-
-	for i := len(fibers) - 1; i >= 0; i-- {
-		if err := sched.Remove(fibers[i]); err != nil {
-			return fmt.Errorf("core-agent: unload fiber %d: %w", fibers[i], err)
-		}
-	}
-	return waitGone(sched, fibers)
+	return s.Close()
 }
 
 // agentPayload builds the top-level agent configuration: the resolved .core/

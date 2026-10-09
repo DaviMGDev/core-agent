@@ -693,5 +693,3 @@ func TestRealGemmaDelegation(t *testing.T) {
 		t.Fatalf("runConfig: %v", err)
 	}
 }
-
-
