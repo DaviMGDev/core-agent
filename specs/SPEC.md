@@ -3,9 +3,9 @@ type: spec
 title: "core-agent — System Specification"
 description: "An agent core on memento: the kernel imported as-is, every other capability a plugin composed at runtime."
 tags: [spec]
-sections: [context, users, user-stories, architecture, semantics, configuration, conformance, nfr, non-goals, decisions]
+sections: [context, users, user-stories, architecture, semantics, tui-link, configuration, conformance, nfr, non-goals, decisions]
 created: "2026-10-05"
-updated: "2026-10-07"
+updated: "2026-10-08"
 ---
 
 # core-agent — System Specification
@@ -207,9 +207,9 @@ fiber effect and advertises the key once the fiber owns it. A declared
 provide left unbound fails activation. The extended ABI (bind/get/invoke)
 landed upstream in memento's `plugins/wasm`, so the entry carries no adapter.
 
-**Sources of truth.** The charter is `agent.pseudo` (kept outside version
-control); this spec refines it. Component specifics live in the component
-specs.
+**Sources of truth.** The charters are `agent.pseudo` and `tui.pseudo` (both
+kept outside version control); this spec refines them. Component specifics
+live in the component specs.
 
 ## Semantics
 
@@ -296,6 +296,38 @@ Configuration), and the entry may still override knobs with flags. A provider
 marked `mock` needs no endpoint: `-mock` swaps the provider document for a
 single in-process mock serving the models the default views resolve to.
 
+## TUI Link
+
+The TUI surface (charter `tui.pseudo`) reaches the core over one stdio
+link: Neovim spawns `core-agent` in link mode and speaks JSON lines. The
+link is a terminal like the repl — a line one way, events the other — and
+the core never learns which surface is asking. The screen owns the chats'
+lifecycle and names; the core owns the turns and the record.
+
+One JSON object per line, UTF-8, newline-terminated. The codec and its
+round-trip tests live in `internal/link`. The entry serves the link with
+`-tui`: it composes the same seven plugins, reads requests from stdin, and
+writes events to stdout, with guest logs going to stderr so stdout carries
+link lines only. One core serves one launch — it is a child of the screen
+and dies with it. The screen points at the binary through `vim.g.nvchat_core`
+(extra flags in `vim.g.nvchat_core_args`).
+
+**Screen → core**
+
+| Object | Meaning |
+|---|---|
+| `{"kind":"deliver","chat":"<id>","text":"..."}` | Run one agent turn on that chat; an unknown id starts a conversation. |
+| `{"kind":"load","chat":"<id>"}` | Answer with that chat's recorded turns, in append order. |
+
+**Core → screen**
+
+| Object | Meaning |
+|---|---|
+| `{"kind":"message","chat":"<id>","role":"assistant","text":"..."}` | One `chat.message`, attributed to its chat. |
+| `{"kind":"loaded","chat":"<id>","messages":[{"role":"user","text":"..."}]}` | The answer to `load`; an unknown chat answers with an empty list. |
+| `{"kind":"job","event":"started\|completed\|failed\|killed","job":"<id>","tool":"...","detail":"..."}` | A job state transition; ticks never cross the link. |
+| `{"kind":"error","error":"..."}` | A malformed request or a failed turn; the loop continues. |
+
 ## Configuration
 
 core-agent reads its configuration from `.core/` before it composes anything:
@@ -357,6 +389,10 @@ at the host level with the same declarations, transcript, and pipeline (fast
 and deterministic). The wasm ABI path — the real guests, the loader,
 bind/get/invoke — is exercised end to end by `cmd/core-agent`'s scripted
 session test, and per-package Go tests cover each library beside its code.
+
+`internal/link`'s codec tests and `cmd/core-agent`'s link tests cover the
+TUI link on the Go side; `tui/tests/run.sh` drives the screen's store
+headlessly against a real link.
 
 ## Non-Functional Requirements
 
@@ -466,3 +502,8 @@ host-side anymore.
   and credentials stay host-side: a reference (`env:NAME`, `auth:NAME`)
   crosses to a guest, never a secret. First run seeds the defaults and never
   overwrites. (Charter `config.pseudo`, confirmed open questions 1–2.)
+- **D18 — The TUI link is JSON lines on stdio.** Neovim spawns the entry in
+  link mode and speaks one JSON object per line: `deliver` and `load` in;
+  `message`, `loaded`, `job`, and `error` out (schema in TUI Link). JSON
+  lines is the charter's wire-encoding open elected for the MVP — the least
+  carrier for a child process that already has a voice. (`tui.pseudo`.)
