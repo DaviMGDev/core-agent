@@ -61,9 +61,39 @@ $ go run ./cmd/core-agent -mock    # in-process mock LLM: no provider, no socket
 $ go run ./cmd/core-agent          # uses the default provider document
 ```
 
-Flags: `-mock` (in-process mock LLM), `-nick <name>` (the nickname the REPL announces). A real session needs a reachable provider; credentials cross as references the host substitutes (`env:VAR` for the environment, `auth:NAME` for the `.core/` auth store), so no secret enters guest memory.
+Flags: `-mock` (in-process mock LLM), `-nick <name>` (the nickname the REPL announces), and `-tui` (serve the TUI link on stdin/stdout instead of the REPL). A real session needs a reachable provider; credentials cross as references the host substitutes (`env:VAR` for the environment, `auth:NAME` for the `.core/` auth store), so no secret enters guest memory.
 
 Commands: `:help`, `:quit` (aliases `:q`, `:exit`); blank lines just re-prompt. When the model calls a tool, the call runs as a job and its completion is reported back to the session unprompted.
+
+## TUI link
+
+The second surface is the TUI (charter `tui.pseudo`, draft in [`tui/`](tui/)):
+a screen hosted in Neovim that spawns the core as a child and speaks JSON
+lines over stdio. The link is one terminal like the REPL — a line one way,
+events the other — so the agent never learns which surface asked.
+
+```console
+$ core-agent -tui                 # JSON lines on stdin/stdout; guest logs on stderr
+```
+
+The wire schema (requests `deliver`/`load`; messages `message`/`loaded`/
+`job`/`error`) is in [`specs/SPEC.md`](specs/SPEC.md), section TUI Link. The
+screen's store (`tui/lua/nvchat/store.lua`) is the only Lua module that
+knows the core exists: it spawns `core-agent -tui` per launch, points
+`list`/`recent`/`load`/`deliver` at it, and freezes the screen if the link
+dies. The binary and extra flags come from `vim.g.nvchat_core` and
+`vim.g.nvchat_core_args`:
+
+```console
+$ go build -o /tmp/core-agent ./cmd/core-agent
+$ NVIM_APPNAME=nvchat nvim \
+    --cmd "let g:nvchat_core='/tmp/core-agent'" \
+    --cmd "let g:nvchat_core_args=['-mock']"
+```
+
+`tui/tests/run.sh` drives the store and the whole screen headlessly against
+a real link, and `tui/tests/smoke.sh` opens a scripted-provider session for
+visual checks.
 
 ## Configuration
 
@@ -95,6 +125,8 @@ $ ./cmd/build-plugins.sh   # rebuild the .wasm guests beside each plugin
 
 The Gherkin scenarios in `specs/features/` and `plugins/*/specs/features/` are normative and run on Godog from `conformance/`. The `.wasm` artifacts are committed beside their plugins, so tests and the entry need no rebuild step.
 
+`tui/tests/run.sh` runs the headless store checks against a real `core-agent -tui` link, and `tui/tests/smoke.sh` sets up the scripted-provider visual smoke.
+
 ## Layout
 
 ```
@@ -103,8 +135,10 @@ plugins/<name>/        library, tests, guest, package-local specs
 plugins/tool-manager/  host-side: the tool registry and job engine
 plugins/notifications/ host-side: the queued event bus
 plugins/subagent/      host-side: an agent callable as a tool
-cmd/core-agent/        entry: composes the plugins and the agent layer, drives the session
+internal/link/         the TUI link codec (JSON lines) and its tests
+cmd/core-agent/        entry: composes the plugins and the agent layer, drives the REPL or the TUI link
 cmd/build-plugins.sh   rebuilds the guests
+tui/                   the nvchat draft: Lua screen, specs, wireframes, tests
 conformance/           Godog runner and step definitions
 ```
 
