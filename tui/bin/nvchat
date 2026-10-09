@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# nvchat - Launch Neovim with the nvchat configuration
+#
+# Usage: nvchat [files...]
+#
+# Sets NVIM_APPNAME so Neovim picks up ~/.config/nvchat instead of the
+# default ~/.config/nvim. This is the only supported entry point: the
+# sandbox never touches the user's nvim/mvim configurations.
+
+NVIM_APPNAME=nvchat exec nvim "$@"

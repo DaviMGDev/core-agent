@@ -1,0 +1,42 @@
+# nvchat — chat screen — LAYOUT v1
+# Meta: single screen; the files panel, the sessions overlay and the chat's visibility are runtime toggles, drawn in their launch state here.
+# Meta: the files panel is real neo-tree — a filesystem tree, not the chat list.
+# Meta: the main area hosts normal editor windows and the chat column; the chat takes the full width while no file is open.
+# Meta: the sessions overlay (mod+s) floats above the screen; its open state is drawn in chat.wireframe.sessions.svg.
+# Meta: messages are dynamic — the two below are placeholders, not fixed content.
+# Meta: palette, borders, gutters and spacing are left to a future DESIGN.md.
+
+(row)
+  # files panel, left; neo-tree over the filesystem, toggled with mod+e
+  (sidebar:open)
+    (files-tree scrollable selectable)
+  # main area: normal editor windows and the chat column, side by side
+  (main)
+    # present only while at least one file is open; the chat takes the full width otherwise
+    (editor:open)
+      # normal Neovim windows; content and count are not fixed
+    # hidden with mod+h; message list above, composer below
+    (chat:visible)
+      (message-list scrollable selectable)
+        # each message is a block: a sender row, then the body
+        (message:assistant)
+          [assistant](text:sender) [12:04](text:time)
+          [The body of a message, wrapped to the width of the panel.](text)
+        (message:user)
+          [you](text:sender) [12:05](text:time)
+          [Another message body, written by the reader.](text)
+        # older and newer messages scroll out of view; content is not fixed
+      (composer)
+        # the composer is a real editor buffer, not a fake input widget
+        (textarea)
+  # floating overlay while open: the chat browser, toggled with mod+s
+  (sessions:closed)
+    (session-list scrollable selectable)
+      [Chat one](session:active)
+      [Chat two](session)
+      [Chat three](session)
+      (spacer)
+      [New chat](button:ghost)
+# editor state shows on the global statusline; its contents are not fixed
+(statusline)
+  [-- INSERT --](text) [Chat one — 2 messages](text)

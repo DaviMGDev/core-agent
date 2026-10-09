@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- nvchat — workspace wireframe: files panel, editor + chat column, sessions overlay open.
+     Structure follows chat.layout.txt.
+     Grid: 160 x 50 terminal cells, 8 x 16 px each (DejaVu Sans Mono at 8 px
+     advance), which is this machine's 1280 x 800 display. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="DejaVu Sans Mono" font-size="13.2879">
+  <title>nvchat — workspace wireframe</title>
+  <desc>Files panel on the left, an editor window and the right-hand chat column in the main area, the floating sessions overlay above them, and the statusline, drawn on a 160x50 terminal grid.</desc>
+
+  <!-- screen background -->
+  <rect width="1280" height="800" fill="#0d1117"/>
+
+  <!-- files panel: (sidebar:open), real neo-tree over the filesystem -->
+  <rect x="0" y="0" width="239" height="784" fill="#10151c"/>
+  <rect x="239" y="0" width="1" height="784" fill="#30363d"/>
+
+  <!-- files tree: (files-tree) — content is not fixed; the highlighted row is the cursor -->
+  <rect x="0" y="76" width="239" height="16" fill="#58a6ff" fill-opacity="0.12"/>
+  <rect x="0" y="76" width="2" height="16" fill="#58a6ff"/>
+  <text x="16" y="28.5" fill="#e6edf3" font-weight="700">~/Draft/nvchat</text>
+  <text x="16" y="44.5" fill="#c9d1d9">▾ lua</text>
+  <text x="32" y="60.5" fill="#c9d1d9">▾ nvchat</text>
+  <text x="48" y="76.5" fill="#e6edf3">ui.lua</text>
+  <text x="32" y="92.5" fill="#8b949e">init.lua</text>
+  <text x="16" y="108.5" fill="#c9d1d9">▸ docs</text>
+  <text x="16" y="124.5" fill="#c9d1d9">README.md</text>
+
+  <!-- editor: (editor:open) — a normal window, content is not fixed -->
+  <text x="256" y="12.5" fill="#c9d1d9">-- nvchat — the chat screen.</text>
+  <text x="256" y="28.5" fill="#c9d1d9">local M = {}</text>
+  <text x="256" y="44.5" fill="#c9d1d9"> </text>
+  <text x="256" y="60.5" fill="#c9d1d9">function M.start()</text>
+  <text x="256" y="76.5" fill="#c9d1d9">  state.started = true</text>
+  <text x="256" y="92.5" fill="#c9d1d9">  state.sessions = store.list()</text>
+  <text x="256" y="108.5" fill="#c9d1d9">  local recent = store.recent()</text>
+  <text x="256" y="124.5" fill="#c9d1d9">  if recent then</text>
+  <text x="256" y="140.5" fill="#c9d1d9">    M.open_session(recent)</text>
+  <text x="256" y="156.5" fill="#c9d1d9">  end</text>
+  <text x="256" y="172.5" fill="#c9d1d9">end</text>
+
+  <!-- chat column border -->
+  <rect x="879" y="0" width="1" height="688" fill="#30363d"/>
+
+  <!-- chat: (chat:visible) — message list in the column, wrapped to its width -->
+  <text x="896" y="12.5" fill="#c9d1d9" font-weight="600">assistant</text>
+  <text x="984" y="12.5" fill="#6e7681">12:04</text>
+  <text x="896" y="28.5" fill="#c9d1d9">The body of a message, wrapped to the</text>
+  <text x="896" y="44.5" fill="#c9d1d9">width of the panel.</text>
+  <text x="896" y="76.5" fill="#c9d1d9" font-weight="600">you</text>
+  <text x="936" y="76.5" fill="#6e7681">12:05</text>
+  <text x="896" y="92.5" fill="#c9d1d9">Another message body, written by the</text>
+  <text x="896" y="108.5" fill="#c9d1d9">reader.</text>
+
+  <!-- composer: (composer) in the column -->
+  <rect x="880" y="688" width="400" height="96" fill="#0f141b"/>
+  <rect x="880" y="688" width="400" height="1" fill="#30363d"/>
+  <rect x="896" y="704" width="8" height="16" fill="#58a6ff"/>
+
+  <!-- sessions overlay: (sessions:open), floated above the main area -->
+  <rect x="240" y="0" width="1040" height="688" fill="#0d1117" opacity="0.55"/>
+  <rect x="336" y="160" width="448" height="144" fill="#161b22"/>
+  <rect x="336" y="160" width="448" height="1" fill="#58a6ff"/>
+  <rect x="336" y="303" width="448" height="1" fill="#58a6ff"/>
+  <rect x="336" y="160" width="1" height="144" fill="#58a6ff"/>
+  <rect x="783" y="160" width="1" height="144" fill="#58a6ff"/>
+  <rect x="340" y="176" width="440" height="16" fill="#58a6ff" fill-opacity="0.12"/>
+  <rect x="340" y="176" width="2" height="16" fill="#58a6ff"/>
+  <text x="352" y="172.5" fill="#e6edf3" font-weight="700">chats</text>
+  <text x="352" y="188.5" fill="#e6edf3" font-weight="600">Chat one</text>
+  <text x="352" y="204.5" fill="#c9d1d9">Chat two</text>
+  <text x="352" y="220.5" fill="#c9d1d9">Chat three</text>
+  <text x="352" y="252.5" fill="#c9d1d9">New chat</text>
+  <text x="560" y="300.5" fill="#6e7681">j/k · enter · esc</text>
+
+  <!-- statusline -->
+  <rect x="0" y="784" width="1280" height="16" fill="#161b22"/>
+  <text x="16" y="796.5" fill="#58a6ff">-- NORMAL --</text>
+  <text x="1080" y="796.5" fill="#8b949e">Chat one — 2 messages</text>
+</svg>

@@ -1,0 +1,50 @@
+                              │ assistant  12:04
+  ~/Draft/nvchat              │ The body of a message, wrapped to the width of the panel.
+  ▾ nvchat                    │
+    ▾ lua                     │ you  12:05
+      ▾ nvchat                │ Another message body, written by the reader.
+        composer.lua          │
+        draft.lua             │
+        init.lua              │
+        messages.lua          │
+│       sessions.lua          │
+        ui.lua                │
+    init.lua                  │
+  README.md                   │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              ┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                              │ ▉
+                              │
+                              │
+                              │
+                              │
+  -- INSERT --                                                                                                                         Chat one — 2 messages
