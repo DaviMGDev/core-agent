@@ -2,7 +2,7 @@
 
 An agent core on [memento](https://github.com/DaviMGDev/memento): the kernel is imported as-is, every other capability a plugin composed at runtime.
 
-The current cut composes **seven plugins** as WebAssembly guests and adds the **agent layer** on top: a host-side tool manager where every call is a job, a queued notification bus, an addressable agent turn loop, a terminal that renders `chat.message`, and subagents callable as tools. The layer is tracked in the epic [#7](https://github.com/DaviMGDev/core-agent/issues/7).
+The current cut composes **seven plugins** as native components and adds the **agent layer** on top: a host-side tool manager where every call is a job, a queued notification bus, an addressable agent turn loop, a terminal that renders `chat.message`, and subagents callable as tools. The layer is tracked in the epic [#7](https://github.com/DaviMGDev/core-agent/issues/7).
 
 ## How it works
 
@@ -10,13 +10,13 @@ core-agent follows memento's spatiotemporal composability: plugins declare the c
 
 Every plugin is one directory:
 
-- `plugins/<name>/` — the host-testable Go library and its tests
-- `plugins/<name>/guest/` — the wasip1 `package main` compiled to `.wasm`
+- `plugins/<name>/` — the host-testable Go library, its native component, and its tests
+- `plugins/<name>/guest/` — the frozen wasip1 `package main`: the dynamic-extension route, neither built nor exercised by the suite
 - `plugins/<name>/specs/` — the plugin's own contract (Gherkin features included)
 
-Host-side components — the tool manager, the notification bus, and the subagent runner — follow the same shape but run in the host process; guests reach them only through the host ABI.
+Host-side components — the tool manager, the notification bus, and the subagent runner — follow the same shape but run in the host process, wired into the native components as the job service, the publish path, and a manager tool; extension guests reach them only through the host ABI.
 
-A chat turn flows through the composed plugins over the loader's `invoke` ABI:
+A chat turn flows through the composed plugins over typed in-process contracts (the same operation documents):
 
 ```
 user line → terminal (host-driven session) → agent-loop
@@ -69,6 +69,8 @@ wake the agent in clock batches, and a batched tick wake is a normal turn.
 
 Host-side components: `tool-manager` (registry and jobs, declaring the `jobs`, `peep`, and `kill` tools above), `notifications` (the queued bus), and `subagent` (the manager tool that calls an agent).
 
+The defaults are native components sharing one host-side key set (`internal/keys`); the committed `.wasm` guests stay as the unexercised extension route.
+
 ## Run
 
 ```console
@@ -76,7 +78,7 @@ $ go run ./cmd/core-agent -mock    # in-process mock LLM: no provider, no socket
 $ go run ./cmd/core-agent          # uses the default provider document
 ```
 
-Flags: `-mock` (in-process mock LLM), `-nick <name>` (the nickname the REPL announces), and `-tui` (serve the TUI link on stdin/stdout instead of the REPL). A real session needs a reachable provider; credentials cross as references the host substitutes (`env:VAR` for the environment, `auth:NAME` for the `.core/` auth store), so no secret enters guest memory.
+Flags: `-mock` (in-process mock LLM), `-nick <name>` (the nickname the REPL announces), and `-tui` (serve the TUI link on stdin/stdout instead of the REPL). A real session needs a reachable provider; credentials cross as references the host substitutes (`env:VAR` for the environment, `auth:NAME` for the `.core/` auth store), so a reference crosses and never a secret.
 
 Commands: `:help`, `:quit` (aliases `:q`, `:exit`); blank lines just re-prompt. When the model calls a tool, the call runs as a job and its completion is reported back to the session unprompted.
 
@@ -88,7 +90,7 @@ lines over stdio. The link is one terminal like the REPL — a line one way,
 events the other — so the agent never learns which surface asked.
 
 ```console
-$ core-agent -tui                 # JSON lines on stdin/stdout; guest logs on stderr
+$ core-agent -tui                 # JSON lines on stdin/stdout; component logs on stderr
 ```
 
 The wire schema (requests `deliver`/`load`; messages `message`/`loaded`/
@@ -134,11 +136,11 @@ Credentials stay host-side: a provider references a credential (`auth:ollama`, o
 ## Test and build
 
 ```console
-$ go test ./...            # libraries, Godog conformance, end-to-end session
-$ ./cmd/build-plugins.sh   # rebuild the .wasm guests beside each plugin
+$ go test ./...            # libraries, native components, Godog conformance, end-to-end session
+$ ./cmd/build-plugins.sh   # rebuild the frozen .wasm guests (extension route only)
 ```
 
-The Gherkin scenarios in `specs/features/` and `plugins/*/specs/features/` are normative and run on Godog from `conformance/`. The `.wasm` artifacts are committed beside their plugins, so tests and the entry need no rebuild step.
+The Gherkin scenarios in `specs/features/` and `plugins/*/specs/features/` are normative and run on Godog from `conformance/`. The `.wasm` artifacts stay committed beside their plugins but are neither built nor exercised by the suite.
 
 `tui/tests/run.sh` runs the headless store checks against a real `core-agent -tui` link, and `tui/tests/smoke.sh` sets up the scripted-provider visual smoke.
 
@@ -146,13 +148,13 @@ The Gherkin scenarios in `specs/features/` and `plugins/*/specs/features/` are n
 
 ```
 specs/                 system specification + features
-plugins/<name>/        library, tests, guest, package-local specs
+plugins/<name>/        library, native component, tests, frozen guest, package-local specs
 plugins/tool-manager/  host-side: the tool registry and job engine
 plugins/notifications/ host-side: the queued event bus
 plugins/subagent/      host-side: an agent callable as a tool
 internal/link/         the TUI link codec (JSON lines) and its tests
 cmd/core-agent/        entry: composes the plugins and the agent layer, drives the REPL or the TUI link
-cmd/build-plugins.sh   rebuilds the guests
+cmd/build-plugins.sh   rebuilds the frozen guests (extension route)
 tui/                   the nvchat draft: Lua screen, specs, wireframes, tests
 conformance/           Godog runner and step definitions
 ```
