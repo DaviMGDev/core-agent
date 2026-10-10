@@ -13,7 +13,6 @@ import (
 
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
 	mcontext "github.com/DaviMGDev/memento/context"
-	"github.com/DaviMGDev/memento/plugins/wasm"
 	"github.com/DaviMGDev/memento/runtime"
 )
 
@@ -43,29 +42,8 @@ func TestLiveResolutionServesLateRegisteredProvider(t *testing.T) {
 
 	ctx := context.Background()
 	var log lockedBuffer
-	engine, err := wasm.NewEngine(ctx)
-	if err != nil {
-		t.Fatalf("engine: %v", err)
-	}
-	defer engine.Close(ctx)
-
-	keys := wasm.NewKeyRegistry()
-	pmComp, err := wasm.NewComponent(ctx, engine, providermanager.Wasm,
-		wasm.WithKeyRegistry(keys),
-		wasm.WithLogWriter(&log),
-		wasm.WithModuleName("provider-manager"),
-	)
-	if err != nil {
-		t.Fatalf("provider-manager component: %v", err)
-	}
-	mmComp, err := wasm.NewComponent(ctx, engine, Wasm,
-		wasm.WithKeyRegistry(keys),
-		wasm.WithLogWriter(&log),
-		wasm.WithModuleName("model-manager"),
-	)
-	if err != nil {
-		t.Fatalf("model-manager component: %v", err)
-	}
+	pmComp := providermanager.NewComponent(&log)
+	mmComp := NewComponent(&log)
 
 	sched := runtime.New()
 	defer sched.Close()
@@ -74,11 +52,12 @@ func TestLiveResolutionServesLateRegisteredProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert provider-manager: %v", err)
 	}
+	waitActive(t, sched, pmID)
 	mmID, err := sched.Insert(mmComp, `{"models":[]}`)
 	if err != nil {
 		t.Fatalf("insert model-manager: %v", err)
 	}
-	waitActive(t, sched, pmID, mmID)
+	waitActive(t, sched, mmID)
 
 	// A model no provider serves fails loudly naming the model.
 	raw, err := mmComp.Handle(ctx, []byte(`{"op":"respond","model":"model-x","context":[{"role":"user","text":"hi"}]}`))
