@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/cucumber/godog"
 
@@ -18,6 +19,7 @@ type agentRecorder struct {
 	jobs      []string
 	recent    []agentRecent
 	presented []agent.Tool
+	requested []agent.Message
 }
 
 type agentRecent struct {
@@ -38,6 +40,7 @@ func (r *agentRecorder) deps(cfg agent.Config) agent.Deps {
 		Project: func(msgs []agent.Message) ([]agent.Message, error) { return msgs, nil },
 		Respond: func(text string, context []agent.Message, tools []agent.Tool) (agent.Answer, error) {
 			r.presented = tools
+			r.requested = context
 			return r.answer, nil
 		},
 		StartJob: func(tool string, args json.RawMessage) (string, error) {
@@ -70,6 +73,8 @@ func registerAgentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the model sees "([^"]*)" with its argument schema$`, stepSeesWithSchema)
 	sc.Step(`^an agent with tool "([^"]*)" renamed to "([^"]*)"$`, stepAgentToolRenamed)
 	sc.Step(`^the model calls the tool "([^"]*)"$`, stepModelCallsTool)
+	sc.Step(`^the request leads with one system message naming "([^"]*)" and "([^"]*)"$`, stepRequestSystemTwo)
+	sc.Step(`^the request leads with one system message naming "([^"]*)" only$`, stepRequestSystemOnly)
 }
 
 func agentWorld(ctx context.Context) (*world, *agentRecorder) {
@@ -206,6 +211,58 @@ func stepAgentToolRenamed(ctx context.Context, tool, alias string) error {
 	w, _ := agentWorld(ctx)
 	w.agentCfg.Tools = []agent.Tool{{Name: tool}}
 	w.agentCfg.Renamed = map[string]string{tool: alias}
+	return nil
+}
+
+func stepRequestSystemTwo(ctx context.Context, first, second string) error {
+	return checkSystemMessage(ctx, []string{first, second})
+}
+
+func stepRequestSystemOnly(ctx context.Context, name string) error {
+	w, _ := agentWorld(ctx)
+	if err := checkSystemMessage(ctx, []string{name}); err != nil {
+		return err
+	}
+	sys := systemText(ctx)
+	for _, hidden := range w.agentCfg.Hidden {
+		if strings.Contains(sys, hidden) {
+			return fmt.Errorf("system message names hidden tool %q:\n%s", hidden, sys)
+		}
+	}
+	for original := range w.agentCfg.Renamed {
+		if strings.Contains(sys, original) {
+			return fmt.Errorf("system message names pre-rename tool %q:\n%s", original, sys)
+		}
+	}
+	return nil
+}
+
+// systemText returns the turn's system message text. checkSystemMessage
+// runs first, so the lead is exactly one system message here.
+func systemText(ctx context.Context) string {
+	_, rec := agentWorld(ctx)
+	return rec.requested[0].Text
+}
+
+func checkSystemMessage(ctx context.Context, names []string) error {
+	_, rec := agentWorld(ctx)
+	if len(rec.requested) == 0 || rec.requested[0].Role != agent.SystemRole {
+		return fmt.Errorf("request does not lead with a system message: %+v", rec.requested)
+	}
+	system := 0
+	for _, m := range rec.requested {
+		if m.Role == agent.SystemRole {
+			system++
+		}
+	}
+	if system != 1 {
+		return fmt.Errorf("request carries %d system messages, want exactly one", system)
+	}
+	for _, name := range names {
+		if !strings.Contains(rec.requested[0].Text, name) {
+			return fmt.Errorf("system message does not name %q:\n%s", name, rec.requested[0].Text)
+		}
+	}
 	return nil
 }
 

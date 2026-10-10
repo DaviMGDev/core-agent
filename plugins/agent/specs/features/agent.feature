@@ -2,7 +2,8 @@ Feature: Agent — the turn loop
 
   A turn runs from wake to quiescence: the model may answer, start a job, or
   say nothing; at most one chat.message leaves a turn; every agent works on
-  its own context; presentation is the agent's.
+  its own context; presentation is the agent's; every model request carries
+  one system message assembled from the presented surface.
 
   Rule: A turn runs from wake to quiescence
 
@@ -45,6 +46,18 @@ Feature: Agent — the turn loop
       Given an agent with tool "subagent" with an argument schema
       When the tools are presented
       Then the model sees "subagent" with its argument schema
+
+  Rule: Every model request carries one system message
+
+    Scenario: The request leads with the system message
+      Given an agent with tools "read" and "write"
+      When a user line wakes the agent
+      Then the request leads with one system message naming "read" and "write"
+
+    Scenario: Hidden and renamed tools resolve in the system message
+      Given an agent with tools "read" and "bash", hiding "bash" and renaming "read" to "load"
+      When a user line wakes the agent
+      Then the request leads with one system message naming "load" only
 
   Rule: A renamed call runs the registry's tool
 

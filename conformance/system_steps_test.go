@@ -308,7 +308,7 @@ func stepUserSends(ctx context.Context, line string) error {
 
 func stepRecordsTurns(ctx context.Context) error {
 	w := worldFrom(ctx)
-	if !strings.Contains(w.firstResponse, "(context:1)") {
+	if !strings.Contains(w.firstResponse, "(context:2)") {
 		return fmt.Errorf("first response %q does not show the recorded user turn", w.firstResponse)
 	}
 	if err := w.sys.enter("probe"); err != nil {
@@ -316,7 +316,7 @@ func stepRecordsTurns(ctx context.Context) error {
 	}
 	responses := w.sys.responses()
 	second := responses[len(responses)-1]
-	if !strings.Contains(second, "(context:3)") {
+	if !strings.Contains(second, "(context:4)") {
 		return fmt.Errorf("second response %q does not show the recorded assistant turn", second)
 	}
 	return nil
@@ -324,7 +324,7 @@ func stepRecordsTurns(ctx context.Context) error {
 
 func stepResponseNamesPipeline(ctx context.Context) error {
 	w := worldFrom(ctx)
-	if !strings.Contains(w.firstResponse, "mock(llama-3.2)") || !strings.Contains(w.firstResponse, "(context:1)") {
+	if !strings.Contains(w.firstResponse, "mock(llama-3.2)") || !strings.Contains(w.firstResponse, "(context:2)") {
 		return fmt.Errorf("response %q does not name the model and context size", w.firstResponse)
 	}
 	return nil
