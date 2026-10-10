@@ -92,6 +92,13 @@ func (m *Manager) Start(tool string, args json.RawMessage, tick time.Duration) *
 	return m.start(tool, args, tick, nil, nil)
 }
 
+// StartChild starts a tool call as a child of parent: its events route to the
+// parent's listener and its depth sits one below the parent's. A nil parent
+// starts a root job, like Start.
+func (m *Manager) StartChild(parent *Job, tool string, args json.RawMessage, tick time.Duration) *Job {
+	return m.start(tool, args, tick, nil, parent)
+}
+
 // start creates one job, adopts it under parent when given, and launches its
 // runner. Adoption happens before the runner starts, so the job's first
 // event already routes to its parent.

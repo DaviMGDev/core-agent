@@ -86,6 +86,13 @@ func (j *Job) Depth() int {
 // ID returns the job's identity.
 func (j *Job) ID() string { return j.id }
 
+// Parent returns the job's parent in the job tree, or nil for a root job.
+func (j *Job) Parent() *Job {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.parent
+}
+
 // Tool returns the tool the job calls.
 func (j *Job) Tool() string { return j.tool }
 

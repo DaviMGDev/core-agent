@@ -51,7 +51,9 @@ Every presented callable carries its argument schema: the surface is
 label through hiding and renaming — presentation relabels, it never rewrites
 a schema. The agent hands the presented surface to model-manager on every
 turn, and sends nothing else: no hidden tools, no registry names behind a
-rename, no tools the configuration does not list.
+rename, no tools the configuration does not list. The job surface (`jobs`,
+`peep`, `kill`) arrives this way like any other callable — the agent attaches
+no special path to it, so its arguments and results are ordinary tool calls.
 
 ## ABI
 

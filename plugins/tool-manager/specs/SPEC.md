@@ -37,6 +37,15 @@ injects it together with the notification bus.
   came through `job_start`. `Depth` walks the tree (a root job is 1).
 - A job started while the caller's instance is attributed to a parent job is
   adopted into that job's subtree, before its runner starts.
+- The manager declares its own agent-facing surface (`JobTools`): `jobs`
+  lists the visible jobs in creation order with id, tool, state, and age;
+  `peep` returns one job's state, last tick, and output so far; `kill`
+  accepts a kill and reports the state at acceptance. The declarations bind
+  the model to report only what a tool confirmed.
+- The agent tools scope like the guest imports: a root call — the top-level
+  agent — sees the whole launch, and a call made under a job (a subagent's)
+  sees only that job's subtree. An unknown or out-of-scope id is refused
+  with a factual error.
 
 ## Jobs
 
@@ -92,3 +101,8 @@ cross-process tools.
   instance can run nested turns (a subagent's child calls back into the same
   loop), and the innermost job is the one in flight. The caller's
   cancellation poll answers for it, and jobs it starts are adopted under it.
+- **TM8 — The job surface is declared, not narrated.** The manager declares
+  `jobs`, `peep`, and `kill` beside the subagent, so the model reaches the
+  job lifecycle through the registry like any other call; the descriptions
+  forbid claiming a result a tool did not confirm, and visibility obeys the
+  same subtree rule as the guest imports.
