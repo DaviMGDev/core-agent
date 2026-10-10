@@ -5,7 +5,7 @@ description: "The turn loop split out of repl-chat: wake to quiescence, at most 
 tags: [spec, plugin]
 sections: [context, semantics, presentation, abi, conformance, non-goals, decisions]
 created: "2026-10-06"
-updated: "2026-10-06"
+updated: "2026-10-10"
 ---
 
 # agent — Plugin Specification
@@ -21,7 +21,9 @@ injects `chat-history`, `model-registry`, and `llm-context`.
 ## Semantics
 
 - A turn runs from wake to quiescence: append the line, project the agent's
-  own context, ask the model with the presented tool surface, act.
+  own context, ask the model with the presented tool surface under one
+  assembled system message, act. The system message travels with the
+  request, never into the record.
 - The model may answer, call a tool, or say nothing. Silence is a legitimate
   outcome and speech is the model's call, not the host's.
 - A turn yields at most one `chat.message`. A tool call starts a job and ends
@@ -54,6 +56,21 @@ turn, and sends nothing else: no hidden tools, no registry names behind a
 rename, no tools the configuration does not list. The job surface (`jobs`,
 `peep`, `kill`) arrives this way like any other callable — the agent attaches
 no special path to it, so its arguments and results are ordinary tool calls.
+
+**System message.** Every model request carries exactly one system message,
+assembled per turn from the activation config and the presented surface. It
+states the agent's identity (the turn loop; the listed tools are the only
+capabilities), the honesty rule (no unlisted capabilities, no unreturned
+results), the wake policy (background job events arrive batched by the
+notification clock; when a wake needs no action the turn stays silent —
+silence is legitimate and nothing unspoken is hidden, per the amended
+no-suppression rule), and the failure policy (tool failures reported
+factually, never narrated). Tools are called only when the wake asks or the
+turn cannot answer otherwise; a brief delegated to the turn is its own to
+answer — never re-delegated. The message names exactly the presented tools,
+so hiding and renaming apply to it as they do to the native surface. The
+agent owns the prompt's content and placement; model-manager transports it
+untouched.
 
 ## ABI
 
@@ -116,3 +133,7 @@ implementation; model transport.
   what the model sees and says; the agent reverse-maps an alias to the
   registry name before starting the job, so the registry never learns the
   label.
+- **A8 — One system message per request, assembled by the agent.** The
+  prompt is the agent's content: identity, honesty, wake policy, failure
+  policy, and the exact presented surface. Placement follows the isolation
+  rules — model-manager carries it without reading it.

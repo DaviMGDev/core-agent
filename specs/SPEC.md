@@ -5,7 +5,7 @@ description: "An agent core on memento: the kernel imported as-is, every other c
 tags: [spec]
 sections: [context, users, user-stories, architecture, semantics, tui-link, configuration, conformance, nfr, non-goals, decisions]
 created: "2026-10-05"
-updated: "2026-10-08"
+updated: "2026-10-10"
 ---
 
 # core-agent — System Specification
@@ -20,8 +20,9 @@ system).*
 core-agent is an agent core built on [memento](https://github.com/DaviMGDev/memento),
 following spatiotemporal composability — the paradigm memento implements
 ("A Programming Paradigm for Spatiotemporal Composability", arXiv:2608.25512).
-The kernel is memento, imported as-is; every other capability is a plugin,
-loaded dynamically as a `.wasm` guest through memento's loader on wazero.
+The kernel is memento, imported as-is; every other capability is a plugin
+composed at runtime — the seven defaults as native components, with the
+wasm guests kept in the tree as the unexercised dynamic-extension route.
 
 The cut is deliberately small: seven starter plugins, and the agent layer adds
 the pieces around the agent that owns the turn loop (the terminal invokes it
@@ -46,9 +47,10 @@ stay plugin-independent.
 responses, ends the session with `:quit`. Drives exactly the session a human
 drives; no privileged channel.
 
-**Plugin author** — writes one plugin directory: a host-testable Go library, a
-wasip1 guest built to `.wasm`, local specs, and tests beside the code. Expects
-the kernel to own composition and reclamation.
+**Plugin author** — writes one plugin directory: a host-testable Go library,
+a native component beside it, local specs, and tests beside the code. A
+wasip1 guest stays optional: the committed guests are the frozen extension
+route. Expects the kernel to own composition and reclamation.
 
 **System assembler** — writes entries under `cmd/` that register plugins and
 reconcile a loader tree with payloads.
@@ -153,15 +155,20 @@ root specs are never touched for plugin reasons.
 **Plugins.** Each plugin is one directory: `plugins/<name>/` holds the
 host-testable Go library and its tests, `plugins/<name>/guest/` holds the
 wasip1 `package main` guest, `plugins/<name>/specs/` holds the plugin's
-contract. The guest is built with
-`GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared` and committed beside the
-plugin; the host side embeds it.
+contract. The seven defaults are native components with the same operation
+and wake documents the guests serve; the guests stay committed beside the
+plugins as the frozen dynamic-extension route — neither built nor exercised
+by the suite (`cmd/build-plugins.sh` remains for that route). Native
+components call each other over typed Go contracts from one shared host-side
+key set (`internal/keys`); the key names match the historical provide/inject
+strings.
 
 Host-side components follow the same shape — library and `specs/` under
-`plugins/<name>/` — but are not compiled to wasm: they run in the host
-process. The tool manager and the notification bus are injected into the
-memento engine; the subagent runner registers as a manager tool over the
-agent guest. Guests reach the host side only through the ABI imports.
+`plugins/<name>/` — and run in the host process: the tool manager serves as
+the agent's job service, the notification bus sits behind the publish path,
+and the subagent runner registers as a manager tool over the agent loop.
+Wasm guests, when composed as extensions, reach the host side only through
+the ABI imports.
 
 **Host ABI (kernel surface).** Guests export `memento_declare`,
 `memento_activate`, `memento_revert_effect`, and `memory`, and may export
@@ -173,13 +180,15 @@ agent guest. Guests reach the host side only through the ABI imports.
 `memento.job_kill`, `memento.job_result_len`, `memento.job_result`,
 `memento.publish`, `memento.cancel_poll`, `memento.register_effect`, and
 `memento.log`. Strings cross as (pointer, length) pairs into guest memory; the
-ABI's isolated contract lives in memento's `plugins/wasm/specs/`. The
-terminal guest exports `memento_alloc`/`memento_handle` so the host can wake
-it with one batch of events at a time; the entry owns stdin, and no guest
-reads WASI stdio.
+ABI's isolated contract lives in memento's `plugins/wasm/specs/`. Native
+components expose the same handler surface in-process (`Handle`), so the
+host wakes the terminal and the agent with one batch of events at a time;
+the entry owns stdin. Wasm guests export `memento_alloc`/`memento_handle`
+for the same purpose, and no guest reads WASI stdio.
 
-**Composition (starter keys).** One shared key registry maps guest key names to
-memento keys:
+**Composition (starter keys).** One shared host-side key set
+(`internal/keys`) carries the typed contracts; the key names are unchanged
+from the guest era:
 
 | Plugin | Injects | Provides |
 |---|---|---|
@@ -190,10 +199,10 @@ memento keys:
 | agent | `chat-history`, `model-registry`, `llm-context` | `agent-loop` |
 | repl-chat | `agent-loop` | `repl` |
 
-**Entry.** `cmd/core-agent` registers the seven compiled guests, composes them
+**Entry.** `cmd/core-agent` registers the seven native components, composes them
 through the scheduler (`Insert` / `Inspect` / `Remove`), wires the agent
 layer — the tool manager as the host job service, the subagent tool over
-the agent guest, a waker per subscriber — drives the terminal session over
+the agent loop, a waker per subscriber — drives the terminal session over
 the repl-chat library, and unloads on exit (reclaiming the jobs first). The
 scheduler path is deliberate: an interactive session outlives the loader's
 five-second quiescence window (memento documents the pattern in
@@ -201,8 +210,10 @@ five-second quiescence window (memento documents the pattern in
 receiving a bus wake cannot both live in a serialized guest — so
 reconciliation stays the kernel mechanism for non-blocking compositions.
 
-**Registration.** A guest registers a provided key by binding its value during
-activation (`memento.bind`): the kernel installs the binding as a revertible
+**Registration.** A component registers a provided key by binding its value
+during
+activation (`runtime.Bind` for native components, `memento.bind` for
+guests): the kernel installs the binding as a revertible
 fiber effect and advertises the key once the fiber owns it. A declared
 provide left unbound fails activation. The extended ABI (bind/get/invoke)
 landed upstream in memento's `plugins/wasm`, so the entry carries no adapter.
@@ -217,39 +228,40 @@ live in the component specs.
 provider; a withdrawn or replaced provider deactivates dependents first. The
 kernel refuses a second provider of the same key and refuses dependency cycles.
 
-**Effect discipline.** Every guest registers at least one effect during
+**Effect discipline.** Every component registers at least one effect during
 activation, binds its declared provided keys (the registration is itself one
-of those tracked effects), and implements `memento_revert_effect`; unloading
-replays inverses in LIFO order, and the host closes the module instance after
-the guest's inverses run. No guest writes cleanup paths outside this
-mechanism.
+of those tracked effects), and reverts through the kernel's LIFO inverses;
+guests implement `memento_revert_effect`, and the host closes the module
+instance after a guest's inverses run. No component writes cleanup paths
+outside this mechanism.
 
 **REPL protocol.** `you> ` before each read; a response line after each
 non-command turn; `:help`, `:quit` (aliases `:q`, `:exit`) are commands; blank
 lines produce a new prompt only. The host entry runs the loop over the
 repl-chat library: it reads stdin, emits the prompt, hands each chat line to
-the terminal guest, and waits for that turn's `chat.message` to render before
+the terminal, and waits for that turn's `chat.message` to render before
 the next prompt. A message published while the session waits renders through
 the same wake. The session ends on `:quit` or EOF, and unload closes it.
 
-**Turn pipeline.** A chat turn flows through the composed plugins over the
-loader's `invoke` ABI: the terminal hands the line to the agent, which
+**Turn pipeline.** A chat turn flows through the composed plugins over typed
+in-process contracts (the same operation documents the handlers serve): the terminal hands the line to the agent, which
 appends the user turn to chat-history, reads recent turns, projects them into
-the context window, asks model-manager to respond, and records the assistant
-reply. When it speaks, the agent publishes the message as `chat.message`;
+the context window, asks model-manager to respond under one assembled system
+message — identity, capabilities, honesty, wake and failure policy (agent
+spec), transported untouched — and records the assistant reply. When it speaks, the agent publishes the message as `chat.message`;
 the terminal renders the event, so a prompted reply and an unprompted
 message take the same path. A tool call ends the turn without a message: the
 agent starts a job and the job's completion, failure, or tick wakes the next
 turn. model-manager resolves the view to
 its concrete models, maps the chosen model to a provider through the injected
-provider registry, and performs the exchange over the loader's host-mediated
-HTTP transport; the provider's answer is the response line. A fallback view
+provider registry, and performs the exchange over plain HTTP with host-side
+credential substitution; the provider's answer is the response line. A fallback view
 tries its targets in order; a discussion group answers with its first
 participant, since merge orchestration is still deferred. A provider marked
 `mock` answers in-process — the mock caller echoes the model, the last user
 message, and the context size — so the system runs with no provider and no
-socket. Credentials cross as `env:VAR` references the host substitutes, so no
-secret enters guest memory.
+socket. Credentials cross as `env:VAR` (or `auth:NAME`) references the host
+substitutes, so a reference crosses and never a secret.
 
 **Jobs and notifications.** A tool call is a job, always: the manager's
 registry holds the callables (`{name, description, argument schema,
@@ -289,14 +301,14 @@ views to one target, `fallback` chains to ordered targets, and `discuss` groups
 to ordered participants, refusing cycles; chat-history appends role-tagged
 messages and serves the most recent turns; context-manager projects a message
 list into a budgeted window (newest first, at least the newest message kept).
-Each management plugin serves its surface as ABI operations through its
-handler: chat-history `append`/`recent`, context-manager `project`,
-model-manager `resolve`/`respond`.
+Each management plugin serves its surface as operation documents through its
+handler — and, natively, through its typed contract: chat-history `append`/`recent`,
+context-manager `project`, model-manager `resolve`/`respond`.
 
 **Configuration.** Each entry carries a payload: JSON config for the
 management plugins, a nickname string for repl-chat. The provider document
 lists, per provider, the concrete models it serves (the model-to-endpoint
-mapping), and the entry wires the loader's HTTP transport with a credential
+mapping), and the entry wires model-manager with a credential
 resolver that reads the `.core/` auth store or the host environment. Under
 `cmd/core-agent` all payloads are resolved from `.core/` at startup (see
 Configuration), and the entry may still override knobs with flags. A provider
@@ -314,7 +326,7 @@ lifecycle and names; the core owns the turns and the record.
 One JSON object per line, UTF-8, newline-terminated. The codec and its
 round-trip tests live in `internal/link`. The entry serves the link with
 `-tui`: it composes the same seven plugins, reads requests from stdin, and
-writes events to stdout, with guest logs going to stderr so stdout carries
+writes events to stdout, with component logs going to stderr so stdout carries
 link lines only. One core serves one launch — it is a child of the screen
 and dies with it. The screen points at the binary through `vim.g.nvchat_core`
 (extra flags in `vim.g.nvchat_core_args`).
@@ -386,8 +398,8 @@ views resolve to.
 secret: `env:NAME` reads only the host environment, and `auth:NAME` reads the
 named credential from `auth.json`, shadowed by a same-named environment
 variable when one is set. The host resolves the reference when it substitutes
-request headers, so a guest payload carries only the reference and no secret
-enters guest memory.
+request headers, so a provider document carries only the reference and a
+reference crosses, never a secret.
 
 ## Conformance
 
@@ -401,9 +413,9 @@ $ go test ./...
 `conformance/` holds the runner and the step definitions. Plugin scenarios
 execute the host-testable libraries; system scenarios compose the seven plugins
 at the host level with the same declarations, transcript, and pipeline (fast
-and deterministic). The wasm ABI path — the real guests, the loader,
-bind/get/invoke — is exercised end to end by `cmd/core-agent`'s scripted
-session test, and per-package Go tests cover each library beside its code.
+and deterministic). The wasm ABI path is not exercised by the suite (review
+decision); per-package Go tests cover each library and component beside
+its code.
 
 `internal/link`'s codec tests and `cmd/core-agent`'s link tests cover the
 TUI link on the Go side; `tui/tests/run.sh` drives the screen's store
@@ -417,10 +429,9 @@ headlessly against a real link.
   composition plugin's library; shared behavior crosses through kernel keys
   and payloads. Host-side components compose them explicitly, since the host
   owns the wiring.
-- **Reclamation.** After unloading the tree, no fiber and no guest module
-  remains.
-- **Portability.** The host builds with Go 1.23+; guests build with the wasip1
-  port; no cgo.
+- **Reclamation.** After unloading the tree, no fiber remains.
+- **Portability.** The host builds with Go 1.23+; no cgo. The frozen guests
+  still build with the wasip1 port via `cmd/build-plugins.sh`.
 
 ## Non-Goals
 
@@ -435,10 +446,12 @@ cross-process or out-of-tree composition; any layout beyond `plugins/`,
 - **D1 — Kernel as-is.** memento is imported, not vendored or patched; missing
   capabilities become upstream proposals, tracked in the plugin specs that
   need them.
-- **D2 — Plugin form: wasm guest first.** repl-chat is a wasm guest from day
-  one (WASI stdio fit the first cut; the host drives the loop now, D15);
-  management plugins are wasm guests too, with their host-testable logic in
-  the plugin library. (Charter open question 1.)
+- **D2 — Plugin form: native components by default.** The seven starter plugins
+  are compiled memento components with their host-testable logic in the plugin
+  library; native-to-native calls use typed Go contracts over a shared
+  host-side key set. The wasip1 guests stay committed as the frozen
+  dynamic-extension route — neither built nor exercised by the suite.
+  (Charter open question 1, settled.)
 - **D3 — Spec placement.** System spec here; plugin-local specs under
   `plugins/<name>/specs/`, as memento keeps root specs plugin-independent.
   (Charter open question 2.)
@@ -446,36 +459,40 @@ cross-process or out-of-tree composition; any layout beyond `plugins/`,
   REPL does not load or unload plugins in the first cut: composition is the
   loader's job, exercised from `cmd/`; repl-chat's spec records this decision.
   (Charter open question 3.)
-- **D5 — Shared key registry.** All seven components register against one
-  `wasm.KeyRegistry`, so injection satisfaction and provider identity work
-  across plugins; each guest binds its provided values through the ABI, so the
-  registration is the guest's own tracked effect.
+- **D5 — Shared key set.** All seven components register against one shared
+  host-side key set (`internal/keys`), so injection satisfaction and provider
+  identity work across plugins; each component binds its typed contracts, so
+  the registration is the component's own tracked effect.
 - **D6 — Transport landed upstream, not patched.** The host ABI now exposes
   host-mediated HTTP (`memento.http_request` with `http_response_len`/
   `http_response`), host-owned egress policy, and host-substituted credential
-  references; memento's loader specifies and implements it. core-agent adopts
-  it: model-manager performs the provider exchange, so a chat turn returns the
-  provider's answer instead of a deterministic stub.
+  references; memento's loader specifies and implements it. core-agent's native model-manager folds the transport role in: it performs
+  the provider exchange over plain HTTP with host-side credential
+  substitution, so a chat turn returns the provider's answer instead of a
+  deterministic stub.
 - **D7 — Godog conformance.** Every feature file runs on Godog from
   `conformance/` (the layout exception this plan proposed); plugin features
-  bind to the libraries, system features to the host-level composition, and
-  the wasm ABI path stays covered by the entry's end-to-end test and the
-  per-package suites.
-- **D8 — Cross-guest data flow runs over invoke.** The loader's `invoke` ABI
+  bind to the libraries and native components, system features to the
+  host-level composition; the wasm ABI path is not exercised by the suite
+  (review decision), and per-package suites cover each component beside
+  its code.
+- **D8 — Data flow runs over typed contracts in-process.** The shared key set
   is the call surface: the agent's turn pipeline reaches chat-history,
-  context-manager, and model-manager through their operation handlers, and
-  the terminal reaches the agent the same way, so the system composes live
-  data, not only lifecycle.
-- **D9 — Committed artifacts.** Each plugin's `.wasm` is built from
-  `plugins/<name>/guest` and committed beside the plugin; the host side embeds
-  it, so tests and the entry need no rebuild step.
+  context-manager, and model-manager through their typed contracts — the same
+  operation documents the handlers serve — and the terminal reaches the agent
+  the same way, so the system composes live data, not only lifecycle. Wasm
+  guests composed as extensions still use the `invoke` ABI.
+- **D9 — Committed artifacts, frozen.** Each plugin's `.wasm` stays committed
+  beside the plugin, but the suite neither builds nor exercises it;
+  `cmd/build-plugins.sh` remains for the extension route, and the default
+  composition does not instantiate it.
 - **D10 — Payloads.** JSON for configurable plugins, string for the REPL
   nickname; defaults live in `cmd/core-agent` and are overridable by entries.
-- **D11 — Provide binding is the guest's own effect.** The loader gained
-  `bind`/`get`/`invoke` upstream (memento `plugins/wasm`); each guest binds its
-declared provides during activation through `memento.bind`, and the temporary
-host-side binding adapter was removed. Nothing about registration is
-host-side anymore.
+- **D11 — Provide binding is the component's own effect.** Each native component
+  binds its declared provides during activation through `runtime.Bind`, each
+  guest through `memento.bind` upstream (memento `plugins/wasm`); the temporary
+  host-side binding adapter was removed. Nothing about registration is
+  host-side anymore.
 - **D12 — Providers declare the models they serve.** A provider's `models`
   list is the model-to-endpoint mapping, so a resolved model reaches a
   concrete endpoint without inventing naming heuristics. A concrete model no
@@ -487,23 +504,24 @@ host-side anymore.
   mechanism.
 - **D14 — Host-side components live beside guest plugins.** The tool
   manager and the notification bus are Go packages under `plugins/<name>/`
-  with their own specs, injected into the memento engine
-  (`WithHostServices`) from `cmd/core-agent`; they own OS resources and
-  concurrency a serialized guest cannot. The subagent runner is host-side
-  too: it registers as a manager tool over the agent guest. Guests reach the
-  host side only through the ABI imports, never around. Subscriptions are
-  host-configured — the assembler decides which component hears which topic —
-  and waking a guest subscriber invokes its handler.
+  with their own specs, constructed in `cmd/core-agent` and wired into the
+  native components — the manager as the agent's job service, the bus behind
+  the publish path; they own OS resources and concurrency a serialized guest
+  cannot. The subagent runner is host-side too: it registers as a manager
+  tool over the agent loop. Extension guests reach the host side only through
+  the ABI imports, never around. Subscriptions are host-configured — the
+  assembler decides which component hears which topic — and waking a
+  subscriber invokes its handler.
 - **D15 — The terminal's loop is host-driven.** The entry runs the repl-chat
-  session loop and wakes the terminal guest once per `chat.message`; the
-  guest runs one agent turn per line and renders the wake's events. A guest
-  that hosted the loop would hold its module lock for the whole session, so
-  no wake could reach it (memento D14: a wake is a call like any other). The
+  session loop and wakes the terminal once per `chat.message`; the
+  terminal runs one agent turn per line and renders the wake's events. A loop
+  hosted in a serialized guest would hold its module lock for the whole session,
+  so no wake could reach it (memento D14: a wake is a call like any other). The
   terminal is therefore a view: the transcript stays chat-history's, and the
-  guest's answer to a line carries no text.
+  terminal's answer to a line carries no text.
 - **D16 — The agent layer is jobs, events, and one loop.** A call is a job,
   always (tool-manager); components hear each other over a queued bus
-  (notifications); the agent is a guest whose turn runs from wake to
+  (notifications); the agent is a native component whose turn runs from wake to
   quiescence, yields at most one `chat.message`, and ends on a tool call.
   The loop is addressable — the terminal, the host waker, and a subagent's
   runner reach it the same way — and one implementation serves the top-level
@@ -515,7 +533,7 @@ host-side anymore.
   of the same four files, layered per key over embedded defaults
   (defaults < user < project < env < flags). `auth.json` is user-scope only
   and credentials stay host-side: a reference (`env:NAME`, `auth:NAME`)
-  crosses to a guest, never a secret. First run seeds the defaults and never
+  crosses to the provider exchange, never a secret. First run seeds the defaults and never
   overwrites. (Charter `config.pseudo`, confirmed open questions 1–2.)
 - **D18 — The TUI link is JSON lines on stdio.** Neovim spawns the entry in
   link mode and speaks one JSON object per line: `deliver` and `load` in;
