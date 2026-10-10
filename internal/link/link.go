@@ -14,10 +14,12 @@ import (
 // Kind is a link line's discriminator.
 type Kind string
 
-// The link vocabulary: two requests in, four messages out.
+// The link vocabulary: four requests in, six messages out.
 const (
 	KindDeliver Kind = "deliver"
 	KindLoad    Kind = "load"
+	KindJobs    Kind = "jobs"
+	KindPeek    Kind = "peek"
 	KindMessage Kind = "message"
 	KindLoaded  Kind = "loaded"
 	KindJob     Kind = "job"
@@ -29,6 +31,7 @@ type Request struct {
 	Kind Kind   `json:"kind"`
 	Chat string `json:"chat,omitempty"`
 	Text string `json:"text,omitempty"`
+	Job  string `json:"job,omitempty"`
 }
 
 // Turn is one recorded conversation turn.
@@ -61,6 +64,41 @@ type Job struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// JobInfo is one job in a jobs answer: identity, state, tree link, and
+// timing. Output stays with Peek.
+type JobInfo struct {
+	Job      string `json:"job"`
+	Tool     string `json:"tool,omitempty"`
+	State    string `json:"state,omitempty"`
+	Parent   string `json:"parent,omitempty"`
+	AgeMS    int64  `json:"age_ms,omitempty"`
+	IdleMS   int64  `json:"idle_ms,omitempty"`
+	LastTick string `json:"last_tick,omitempty"`
+}
+
+// Jobs is the answer to a jobs request: the launch's jobs in creation order,
+// with each job's parent naming its place in the tree.
+type Jobs struct {
+	Kind Kind      `json:"kind"`
+	Jobs []JobInfo `json:"jobs"`
+}
+
+// Peek is the answer to a peek request: one job's state, last tick, and
+// output so far, with the result and error once it is terminal.
+type Peek struct {
+	Kind     Kind            `json:"kind"`
+	Job      string          `json:"job"`
+	Tool     string          `json:"tool,omitempty"`
+	State    string          `json:"state,omitempty"`
+	Parent   string          `json:"parent,omitempty"`
+	AgeMS    int64           `json:"age_ms,omitempty"`
+	IdleMS   int64           `json:"idle_ms,omitempty"`
+	LastTick string          `json:"last_tick,omitempty"`
+	Output   string          `json:"output,omitempty"`
+	Result   json.RawMessage `json:"result,omitempty"`
+	Error    string          `json:"error,omitempty"`
+}
+
 // Failure is a refused request or a failed turn; the loop continues.
 type Failure struct {
 	Kind  Kind   `json:"kind"`
@@ -86,6 +124,11 @@ func DecodeRequest(line []byte) (Request, error) {
 	case KindLoad:
 		if req.Chat == "" {
 			return Request{}, fmt.Errorf("link: load: empty chat")
+		}
+	case KindJobs:
+	case KindPeek:
+		if req.Job == "" {
+			return Request{}, fmt.Errorf("link: peek: empty job")
 		}
 	default:
 		return Request{}, fmt.Errorf("link: unknown kind %q", req.Kind)

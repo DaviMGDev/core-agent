@@ -50,6 +50,18 @@ func linkLines(t *testing.T, stream string) []any {
 				t.Fatalf("job %q: %v", raw, err)
 			}
 			lines = append(lines, j)
+		case link.KindJobs:
+			var js link.Jobs
+			if err := json.Unmarshal([]byte(raw), &js); err != nil {
+				t.Fatalf("jobs %q: %v", raw, err)
+			}
+			lines = append(lines, js)
+		case link.KindPeek:
+			var pk link.Peek
+			if err := json.Unmarshal([]byte(raw), &pk); err != nil {
+				t.Fatalf("peek %q: %v", raw, err)
+			}
+			lines = append(lines, pk)
 		case link.KindError:
 			var f link.Failure
 			if err := json.Unmarshal([]byte(raw), &f); err != nil {
@@ -409,6 +421,76 @@ func TestRunLinkNeverStreamsTicksAndWritesWholeLines(t *testing.T) {
 	}
 	close(release)
 	waitOut(t, out, `"event":"completed"`)
+}
+
+// TestRunLinkAnswersJobsAndPeek proves the read-only job queries: jobs lists
+// the launch in creation order with tree links, peek returns state, last
+// tick, and output so far, and an unknown id answers a factual error.
+func TestRunLinkAnswersJobsAndPeek(t *testing.T) {
+	pw, manager, out, _, stop := startDrivenLink(t)
+	defer stop()
+
+	release := make(chan struct{})
+	defer close(release)
+	if err := manager.Registry().Declare(toolmanager.Tool{Name: "slow", Run: func(ctx context.Context, _ json.RawMessage, o *toolmanager.Output) (any, error) {
+		_, _ = o.Write([]byte("half a report\n"))
+		select {
+		case <-release:
+			return "released", nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+
+	root := manager.Start("slow", nil, 0)
+	child := manager.StartChild(root, "slow", nil, 5*time.Millisecond)
+	waitFor(t, "the root's output", func() bool {
+		return strings.Contains(manager.Peep(root).Output, "half a report")
+	}, out)
+	waitFor(t, "the child's first tick", func() bool {
+		return !manager.Peep(child).LastTick.IsZero()
+	}, out)
+
+	writeLine(t, pw, `{"kind":"jobs"}`)
+	waitOut(t, out, `"kind":"jobs"`)
+	answers := pull[link.Jobs](linkLines(t, out.String()))
+	if len(answers) != 1 {
+		t.Fatalf("jobs answers = %d, want 1:\n%s", len(answers), out.String())
+	}
+	rows := answers[0].Jobs
+	if len(rows) != 2 {
+		t.Fatalf("jobs rows = %+v, want two", rows)
+	}
+	if rows[0].Job != "job-1" || rows[0].State != "running" || rows[0].Parent != "" {
+		t.Errorf("root row = %+v, want job-1 running at the top", rows[0])
+	}
+	if rows[1].Job != "job-2" || rows[1].Parent != "job-1" || rows[1].LastTick == "" {
+		t.Errorf("child row = %+v, want job-2 linked to job-1 with a tick", rows[1])
+	}
+
+	writeLine(t, pw, `{"kind":"peek","job":"job-1"}`)
+	waitOut(t, out, `"kind":"peek"`)
+	peeks := pull[link.Peek](linkLines(t, out.String()))
+	if len(peeks) != 1 {
+		t.Fatalf("peek answers = %d, want 1:\n%s", len(peeks), out.String())
+	}
+	if peeks[0].State != "running" || peeks[0].Tool != "slow" || !strings.Contains(peeks[0].Output, "half a report") {
+		t.Errorf("peek = %+v, want the running job with its output", peeks[0])
+	}
+
+	writeLine(t, pw, `{"kind":"peek","job":"job-99"}`)
+	waitOut(t, out, "unknown job")
+	found := false
+	for _, f := range pull[link.Failure](linkLines(t, out.String())) {
+		if strings.Contains(f.Error, "unknown job") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no factual unknown-job error in:\n%s", out.String())
+	}
 }
 
 // chunkWriter records every Write it receives as one chunk.

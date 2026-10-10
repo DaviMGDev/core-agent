@@ -325,6 +325,8 @@ and dies with it. The screen points at the binary through `vim.g.nvchat_core`
 |---|---|
 | `{"kind":"deliver","chat":"<id>","text":"..."}` | Run one agent turn on that chat; an unknown id starts a conversation. |
 | `{"kind":"load","chat":"<id>"}` | Answer with that chat's recorded turns, in append order. |
+| `{"kind":"jobs"}` | Answer with the launch's jobs in creation order, each naming its parent for the tree. |
+| `{"kind":"peek","job":"<id>"}` | Answer with one job's state, last tick, and output so far; an unknown id answers an error. |
 
 **Core → screen**
 
@@ -332,8 +334,14 @@ and dies with it. The screen points at the binary through `vim.g.nvchat_core`
 |---|---|
 | `{"kind":"message","chat":"<id>","role":"assistant","text":"..."}` | One `chat.message`, attributed to its chat. |
 | `{"kind":"loaded","chat":"<id>","messages":[{"role":"user","text":"..."}]}` | The answer to `load`; an unknown chat answers with an empty list. |
+| `{"kind":"jobs","jobs":[{"job":"<id>","tool":"...","state":"...","parent":"<id>","age_ms":N,"idle_ms":N,"last_tick":"..."}]}` | The answer to `jobs`: the launch's jobs in creation order, each linked to its parent. |
+| `{"kind":"peek","job":"<id>","tool":"...","state":"...","parent":"<id>","age_ms":N,"idle_ms":N,"last_tick":"...","output":"...","result":...,"error":"..."}` | The answer to `peek`: one job's state, last tick, and output so far, with its result once terminal. |
 | `{"kind":"job","event":"started\|completed\|failed\|killed","job":"<id>","tool":"...","detail":"..."}` | A job state transition; ticks never cross the link. |
 | `{"kind":"error","error":"..."}` | A malformed request or a failed turn; the loop continues. |
+
+The job queries are read-only: the screen observes and peeks through them.
+Start, peep, kill, and the tick cadence stay with the tool manager, and a
+tick never becomes a link line or a transcript entry.
 
 ## Configuration
 

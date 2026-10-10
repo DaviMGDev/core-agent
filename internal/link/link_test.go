@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestDecodeRequestExamples pins the inbound vocabulary: the two requests
+// TestDecodeRequestExamples pins the inbound vocabulary: the four requests
 // decode, and everything else is refused as malformed.
 func TestDecodeRequestExamples(t *testing.T) {
 	tests := []struct {
@@ -26,7 +26,18 @@ func TestDecodeRequestExamples(t *testing.T) {
 			line: `{"kind":"load","chat":"c1"}`,
 			want: Request{Kind: KindLoad, Chat: "c1"},
 		},
+		{
+			name: "jobs",
+			line: `{"kind":"jobs"}`,
+			want: Request{Kind: KindJobs},
+		},
+		{
+			name: "peek",
+			line: `{"kind":"peek","job":"job-1"}`,
+			want: Request{Kind: KindPeek, Job: "job-1"},
+		},
 		{name: "unknown kind", line: `{"kind":"poke","chat":"c1"}`, wantErr: true},
+		{name: "peek without job", line: `{"kind":"peek"}`, wantErr: true},
 		{name: "load without chat", line: `{"kind":"load"}`, wantErr: true},
 		{name: "deliver without chat", line: `{"kind":"deliver","text":"hi"}`, wantErr: true},
 		{name: "deliver without text", line: `{"kind":"deliver","chat":"c1"}`, wantErr: true},
@@ -75,6 +86,19 @@ func TestEncodeLineRoundTripsEachKind(t *testing.T) {
 			v:    Job{Kind: KindJob, Event: "completed", Job: "7", Tool: "subagent", Detail: "the count is 3"},
 		},
 		{
+			name: "jobs",
+			v: Jobs{Kind: KindJobs, Jobs: []JobInfo{
+				{Job: "job-1", Tool: "subagent", State: "running", AgeMS: 1200, IdleMS: 300, LastTick: "2026-10-09T04:12:49Z"},
+				{Job: "job-2", Tool: "ok", State: "done", Parent: "job-1"},
+			}},
+		},
+		{
+			name: "peek",
+			v: Peek{Kind: KindPeek, Job: "job-1", Tool: "subagent", State: "done", Parent: "job-0",
+				AgeMS: 1200, IdleMS: 300, LastTick: "2026-10-09T04:12:49Z", Output: "working\n",
+				Result: json.RawMessage(`{"reply":"ok"}`)},
+		},
+		{
 			name: "failure",
 			v:    Failure{Kind: KindError, Error: "link: deliver: empty text"},
 		},
@@ -111,6 +135,8 @@ func TestEncodedKindFields(t *testing.T) {
 		{Message{Kind: KindMessage}, string(KindMessage)},
 		{Loaded{Kind: KindLoaded}, string(KindLoaded)},
 		{Job{Kind: KindJob}, string(KindJob)},
+		{Jobs{Kind: KindJobs}, string(KindJobs)},
+		{Peek{Kind: KindPeek}, string(KindPeek)},
 		{Failure{Kind: KindError}, string(KindError)},
 	}
 	for _, tt := range tests {

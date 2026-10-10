@@ -7,17 +7,28 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/DaviMGDev/core-agent/internal/link"
 	"github.com/DaviMGDev/core-agent/plugins/agent"
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	"github.com/DaviMGDev/core-agent/plugins/notifications"
+	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 )
 
-// linkJobTopics are the job events the link hears: every state transition the
-// screen streams, plus ticks — which wake the agent but never cross the link.
-var linkJobTopics = []string{
+// linkStreamTopics are the job transitions the link streams as they happen.
+// Ticks are absent: they wake the agent but never cross the link.
+var linkStreamTopics = []string{
 	notifications.TopicJobStarted,
+	notifications.TopicJobCompleted,
+	notifications.TopicJobFailed,
+	notifications.TopicJobKilled,
+}
+
+// linkWakeTopics are the job events that wake the agent through the
+// notification clock. A start is absent: the turn that started the job just
+// ended. Ticks wake the agent without crossing the link.
+var linkWakeTopics = []string{
 	notifications.TopicJobTick,
 	notifications.TopicJobCompleted,
 	notifications.TopicJobFailed,
@@ -92,9 +103,7 @@ func runLink(ctx context.Context, in io.Reader, out io.Writer, logs io.Writer, c
 		out:     &linkWriter{out: out, log: logs},
 		jobs:    make(map[string]string),
 	}
-	for _, topic := range linkJobTopics {
-		s.bus.Subscribe(topic, frontend)
-	}
+	frontend.attach(s)
 	err = frontend.serve(in)
 	if closeErr := s.Close(); err == nil {
 		err = closeErr
@@ -116,6 +125,10 @@ func (f *linkFrontend) serve(in io.Reader) error {
 			f.deliver(req.Chat, req.Text)
 		case link.KindLoad:
 			f.load(req.Chat)
+		case link.KindJobs:
+			f.jobsAnswer()
+		case link.KindPeek:
+			f.peek(req.Job)
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -169,6 +182,70 @@ func (f *linkFrontend) load(chat string) {
 	f.out.line(link.Loaded{Kind: link.KindLoaded, Chat: chat, Messages: turns})
 }
 
+// jobsAnswer answers a jobs request with the launch's jobs in creation
+// order, each linked to its parent so the screen can draw the tree.
+func (f *linkFrontend) jobsAnswer() {
+	jobs := f.session.manager.Jobs()
+	infos := make([]link.JobInfo, 0, len(jobs))
+	for _, job := range jobs {
+		infos = append(infos, jobInfo(job))
+	}
+	f.out.line(link.Jobs{Kind: link.KindJobs, Jobs: infos})
+}
+
+// peek answers a peek request with one job's state, last tick, and output so
+// far; an unknown id is refused as a factual error.
+func (f *linkFrontend) peek(jobID string) {
+	job, ok := f.session.manager.Job(jobID)
+	if !ok {
+		f.out.line(link.Failure{Kind: link.KindError, Error: fmt.Sprintf("unknown job %q", jobID)})
+		return
+	}
+	st := job.Peep()
+	peek := link.Peek{
+		Kind:   link.KindPeek,
+		Job:    st.ID,
+		Tool:   st.Tool,
+		State:  string(st.State),
+		AgeMS:  st.Elapsed.Milliseconds(),
+		Output: st.Output,
+		Error:  st.Error,
+	}
+	if parent := job.Parent(); parent != nil {
+		peek.Parent = parent.ID()
+	}
+	if !st.LastTick.IsZero() {
+		peek.LastTick = st.LastTick.UTC().Format(time.RFC3339Nano)
+		peek.IdleMS = time.Since(st.LastTick).Milliseconds()
+	}
+	if st.Result != nil {
+		if b, err := json.Marshal(st.Result); err == nil {
+			peek.Result = b
+		}
+	}
+	f.out.line(peek)
+}
+
+// jobInfo projects one job's status onto the link's row shape: identity,
+// state, tree link, and timing.
+func jobInfo(job *toolmanager.Job) link.JobInfo {
+	st := job.Peep()
+	info := link.JobInfo{
+		Job:   st.ID,
+		Tool:  st.Tool,
+		State: string(st.State),
+		AgeMS: st.Elapsed.Milliseconds(),
+	}
+	if parent := job.Parent(); parent != nil {
+		info.Parent = parent.ID()
+	}
+	if !st.LastTick.IsZero() {
+		info.LastTick = st.LastTick.UTC().Format(time.RFC3339Nano)
+		info.IdleMS = time.Since(st.LastTick).Milliseconds()
+	}
+	return info
+}
+
 // invoke runs one agent turn and reads its answer.
 func (f *linkFrontend) invoke(wake agent.Wake) (agentAnswer, error) {
 	req, err := json.Marshal(wake)
@@ -203,47 +280,63 @@ func (f *linkFrontend) jobChat(job string) string {
 	return f.jobs[job]
 }
 
-// Wake is the link's job subscription: stream each state transition, wake
-// the agent with the batch (a start is not a wake: the turn that started the
-// job just ended), and stream the unprompted speech back. The batch runs on
-// the chat that started the job, so the reply lands where the job was
-// launched; a job the link never saw start runs on the launch default.
-func (f *linkFrontend) Wake(sub *notifications.Subscription) {
+// attach subscribes the link's job surfaces: state transitions stream
+// immediately, and the agent wakes on the notification clock so a burst of
+// job events flushes as one batched turn.
+func (f *linkFrontend) attach(s *composedSession) {
+	for _, topic := range linkStreamTopics {
+		s.bus.Subscribe(topic, linkStream{f: f})
+	}
+	for _, topic := range linkWakeTopics {
+		s.bus.SubscribeClocked(topic, linkWake{f: f})
+	}
+}
+
+// linkStream is the link's transition subscription: every started,
+// completed, failed, and killed line crosses as it happens.
+type linkStream struct{ f *linkFrontend }
+
+func (w linkStream) Wake(sub *notifications.Subscription) {
+	for _, e := range sub.Take() {
+		w.f.jobLine(e.Topic, e.Payload)
+	}
+}
+
+// linkWake is the link's agent subscription, clocked: each boundary wakes the
+// agent with every job event queued since the last one, and an empty boundary
+// wakes no one. The batch runs on the chat that started the job, so the
+// reply lands where the job was launched; a job the link never saw start runs
+// on the launch default.
+type linkWake struct{ f *linkFrontend }
+
+func (w linkWake) Wake(sub *notifications.Subscription) {
 	busEvents := sub.Take()
-	var wake []agent.Event
+	wake := make([]agent.Event, 0, len(busEvents))
 	chat := ""
 	for _, e := range busEvents {
-		switch e.Topic {
-		case notifications.TopicJobTick:
-			// Ticks wake the agent; they never paint the screen.
-		default:
-			f.jobLine(e.Topic, e.Payload)
-		}
 		if id := jobID(e.Payload); id != "" {
-			if c := f.jobChat(id); c != "" {
+			if c := w.f.jobChat(id); c != "" {
 				chat = c
 			}
 		}
-		if e.Topic != notifications.TopicJobStarted {
-			wake = append(wake, agent.Event{Topic: e.Topic, Payload: json.RawMessage(e.Payload)})
-		}
+		wake = append(wake, agent.Event{Topic: e.Topic, Payload: json.RawMessage(e.Payload)})
 	}
 	if len(wake) == 0 {
 		return
 	}
-	cfg := f.session.agentConfig.Normalized()
+	cfg := w.f.session.agentConfig.Normalized()
 	if chat != "" {
 		cfg.Conversation = chat
 	}
-	f.session.gate.Lock()
-	answer, err := f.invoke(agent.Wake{Events: wake, Config: &cfg})
-	f.session.gate.Unlock()
+	w.f.session.gate.Lock()
+	answer, err := w.f.invoke(agent.Wake{Events: wake, Config: &cfg})
+	w.f.session.gate.Unlock()
 	if err != nil {
-		f.out.line(link.Failure{Kind: link.KindError, Error: err.Error()})
+		w.f.out.line(link.Failure{Kind: link.KindError, Error: err.Error()})
 		return
 	}
 	if answer.Text != "" {
-		f.out.line(link.Message{Kind: link.KindMessage, Chat: cfg.Conversation, Role: "assistant", Text: answer.Text})
+		w.f.out.line(link.Message{Kind: link.KindMessage, Chat: cfg.Conversation, Role: "assistant", Text: answer.Text})
 	}
 }
 
