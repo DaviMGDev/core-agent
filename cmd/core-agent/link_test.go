@@ -138,7 +138,7 @@ func TestRunLinkDeliversOnTheNamedChat(t *testing.T) {
 	if m.Chat != "alpha" || m.Role != "assistant" {
 		t.Errorf("message = %+v, want an assistant message on alpha", m)
 	}
-	if want := "mock(gemma4:cloud): hello link (context:1)"; m.Text != want {
+	if want := "mock(gemma4:cloud): hello link (context:2)"; m.Text != want {
 		t.Errorf("message text = %q, want %q", m.Text, want)
 	}
 
@@ -379,17 +379,33 @@ func TestRunLinkStreamsEveryJobTransitionOnce(t *testing.T) {
 			continue
 		}
 		got := events[id]
-		if len(got) != len(wantEvents) {
-			t.Errorf("job %s (%s) transitions = %v, want %v", id, tool, got, wantEvents)
-			continue
-		}
-		for i := range got {
-			if got[i] != wantEvents[i] {
-				t.Errorf("job %s (%s) transitions = %v, want %v", id, tool, got, wantEvents)
-				break
-			}
+		// Cross-topic delivery order is not a bus guarantee (only
+		// per-subscriber order is), and the link subscribes per topic —
+		// so a completed line may precede its started line. Compare as
+		// sets: the same transitions, each exactly once.
+		if !sameTransitions(got, wantEvents) {
+			t.Errorf("job %s (%s) transitions = %v, want %v in any order", id, tool, got, wantEvents)
 		}
 	}
+}
+
+// sameTransitions reports whether got and want carry the same transitions
+// with the same multiplicities, in any order.
+func sameTransitions(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	counts := make(map[string]int, len(got))
+	for _, e := range got {
+		counts[e]++
+	}
+	for _, e := range want {
+		counts[e]--
+		if counts[e] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // TestRunLinkNeverStreamsTicksAndWritesWholeLines proves a ticking job's

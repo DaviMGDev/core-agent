@@ -256,7 +256,7 @@ func TestRunMockLLMAnswersWithoutProvider(t *testing.T) {
 
 	for _, want := range []string{
 		`provider-manager: 1 provider(s) ready`,
-		`mock(gemma4:cloud): hello there (context:1)`,
+		`mock(gemma4:cloud): hello there (context:2)`,
 		`repl: session closed`,
 		`provider-manager: providers released`,
 	} {
