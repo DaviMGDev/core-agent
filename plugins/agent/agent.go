@@ -120,11 +120,45 @@ type TurnResult struct {
 	Job string
 }
 
+// SystemRole is the role of the assembled system message: the one message
+// per turn that is the agent's own content, never part of the record.
+const SystemRole = "system"
+
+// SystemMessage assembles the turn's system message from the activation
+// config and the presented tool surface: the agent's identity and only
+// capabilities, the honesty rule, the wake policy, and the failure policy.
+// The tools named are exactly the presented ones — hidden tools pruned,
+// renamed tools relabeled — so the model can neither reach nor claim more.
+func SystemMessage(cfg Config) Message {
+	presented := Present(cfg)
+	var b strings.Builder
+	b.WriteString("You are the turn loop of the core-agent system. Your only capabilities are the tools listed below")
+	if len(presented) == 0 {
+		b.WriteString(": none are presented this turn — answer from the conversation, or answer with silence.")
+	} else {
+		b.WriteString(":\n")
+		for _, t := range presented {
+			b.WriteString("  - " + t.Name)
+			if strings.TrimSpace(t.Description) != "" {
+				b.WriteString(": " + t.Description)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("Call a tool only when the wake asks for it or you cannot answer otherwise; a brief delegated to you is yours to answer — do not hand it to another agent.\n")
+	}
+	b.WriteString("Do not claim capabilities you were not given, and never assert a result no tool returned.\n")
+	b.WriteString("Wakes arrive for user lines and background job events (ticks, completions, failures, kills), batched by the notification clock; when a wake needs no action, answer with silence — silence ends the turn with no message.\n")
+	b.WriteString("Report tool failures factually — tool, state, and error as observed — without inventing a diagnosis.")
+	return Message{Role: SystemRole, Text: b.String()}
+}
+
 // RunTurn runs one turn from wake to quiescence: append the line, project the
-// agent's own context, ask the model with the presented tool surface, and act
-// on the answer. A tool call starts a job and ends the turn without a
-// message; the job's completion or a tick wakes the next turn. Silence is a
-// legitimate outcome; at most one chat.message leaves a turn.
+// agent's own context, ask the model with the presented tool surface under
+// the assembled system message, and act on the answer. A tool call starts a
+// job and ends the turn without a message; the job's completion or a tick
+// wakes the next turn. Silence is a legitimate outcome; at most one
+// chat.message leaves a turn. The system message is assembled per turn — it
+// travels with the request, never into the record.
 func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 	cfg = cfg.Normalized()
 	if err := deps.Append("user", line); err != nil {
@@ -138,7 +172,9 @@ func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 	if err != nil {
 		return TurnResult{}, err
 	}
-	answer, err := deps.Respond(line, projected, Present(cfg))
+	presented := Present(cfg)
+	context := append([]Message{SystemMessage(cfg)}, projected...)
+	answer, err := deps.Respond(line, context, presented)
 	if err != nil {
 		return TurnResult{}, err
 	}
