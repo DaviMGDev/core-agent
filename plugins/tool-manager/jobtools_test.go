@@ -168,3 +168,58 @@ func TestJobToolsScopeTheListing(t *testing.T) {
 		t.Fatalf("subagent rows = %+v, want only %s and %s", rows, root.ID(), child.ID())
 	}
 }
+
+func TestJobToolsExecuteSynchronouslyWithoutSpawningJobs(t *testing.T) {
+	pub := &recorder{}
+	m := jobToolSet(t, pub)
+
+	job := m.Start("ok", nil, 0)
+	job.Wait()
+
+	initialStarted := pub.count("job.started")
+	initialCompleted := pub.count("job.completed")
+	if initialStarted != 1 || initialCompleted != 1 {
+		t.Fatalf("expected 1 started and 1 completed, got %d and %d", initialStarted, initialCompleted)
+	}
+	if len(m.Jobs()) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(m.Jobs()))
+	}
+
+	// 1. Execute "jobs" synchronously
+	res, err := m.Execute(context.Background(), JobsToolName, nil)
+	if err != nil {
+		t.Fatalf("Execute jobs: %v", err)
+	}
+	rows, ok := res.([]jobRow)
+	if !ok || len(rows) != 1 || rows[0].Job != job.ID() {
+		t.Fatalf("jobs rows = %+v, want 1 row for %s", rows, job.ID())
+	}
+	if pub.count("job.started") != initialStarted {
+		t.Fatalf("jobs tool spawned a job.started event: count = %d, want %d", pub.count("job.started"), initialStarted)
+	}
+	if pub.count("job.completed") != initialCompleted {
+		t.Fatalf("jobs tool spawned a job.completed event: count = %d, want %d", pub.count("job.completed"), initialCompleted)
+	}
+	if len(m.Jobs()) != 1 {
+		t.Fatalf("jobs tool allocated a job in manager: count = %d, want 1", len(m.Jobs()))
+	}
+
+	// 2. Execute "peep" synchronously
+	res, err = m.Execute(context.Background(), PeepToolName, json.RawMessage(`{"job":"`+job.ID()+`"}`))
+	if err != nil {
+		t.Fatalf("Execute peep: %v", err)
+	}
+	st, ok := res.(statusDoc)
+	if !ok || st.Job != job.ID() || st.State != string(StateDone) {
+		t.Fatalf("peep status = %+v, want done status for %s", st, job.ID())
+	}
+	if pub.count("job.started") != initialStarted {
+		t.Fatalf("peep tool spawned a job.started event: count = %d, want %d", pub.count("job.started"), initialStarted)
+	}
+	if pub.count("job.completed") != initialCompleted {
+		t.Fatalf("peep tool spawned a job.completed event: count = %d, want %d", pub.count("job.completed"), initialCompleted)
+	}
+	if len(m.Jobs()) != 1 {
+		t.Fatalf("peep tool allocated a job in manager: count = %d, want 1", len(m.Jobs()))
+	}
+}

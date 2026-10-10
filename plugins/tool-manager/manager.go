@@ -85,6 +85,40 @@ func New(opts Options) *Manager {
 // Registry returns the manager's tool registry.
 func (m *Manager) Registry() *Registry { return m.registry }
 
+// Execute runs a tool synchronously in the caller's goroutine and returns its
+// result directly. For tools declared with Background=true, it starts a Job
+// and returns {"job":"job-X","status":"started"} synchronously.
+func (m *Manager) Execute(ctx context.Context, toolName string, args json.RawMessage) (any, error) {
+	return m.ExecuteCaller(ctx, nil, nil, toolName, args)
+}
+
+// ExecuteCaller runs a tool with an explicit caller instance and parent job,
+// scoping child job adoption and visibility.
+func (m *Manager) ExecuteCaller(ctx context.Context, caller *runtime.Instance, parent *Job, toolName string, args json.RawMessage) (any, error) {
+	m.mu.Lock()
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		return nil, errors.New("tool manager is closed")
+	}
+	t, ok := m.registry.Lookup(toolName)
+	if !ok {
+		return nil, fmt.Errorf("unknown tool %q", toolName)
+	}
+	if t.Background {
+		job := m.start(toolName, args, 0, caller, parent)
+		return map[string]any{"job": job.ID(), "status": "started"}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	out := &Output{}
+	if parent != nil {
+		out.job = parent
+	}
+	return t.Run(ctx, args, out)
+}
+
 // Start begins a tool call and returns its job handle at once. An unknown
 // tool is refused as a job that fails immediately with the reason; the call
 // itself always returns a job.

@@ -393,3 +393,65 @@ func TestFailingRunnerFailsTheJob(t *testing.T) {
 		t.Fatalf("job.failed events = %d, want 1", rec.count(notifications.TopicJobFailed))
 	}
 }
+
+func TestExecuteRunsToolSynchronouslyWithoutJob(t *testing.T) {
+	rec := &recorder{}
+	m := New(Options{Publisher: rec})
+	if err := m.Registry().Declare(Tool{
+		Name: "add",
+		Run: func(ctx context.Context, args json.RawMessage, out *Output) (any, error) {
+			var nums struct {
+				A int `json:"a"`
+				B int `json:"b"`
+			}
+			if err := json.Unmarshal(args, &nums); err != nil {
+				return nil, err
+			}
+			return nums.A + nums.B, nil
+		},
+	}); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+
+	res, err := m.Execute(context.Background(), "add", json.RawMessage(`{"a":2,"b":3}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if val, ok := res.(int); !ok || val != 5 {
+		t.Fatalf("Execute result = %v, want 5", res)
+	}
+
+	// Verify no job was created
+	if len(m.Jobs()) != 0 {
+		t.Fatalf("len(Jobs) = %d, want 0 (no job allocated)", len(m.Jobs()))
+	}
+	// Verify no events were published to the bus
+	if len(rec.events) != 0 {
+		t.Fatalf("published events = %d, want 0", len(rec.events))
+	}
+
+	// Unknown tool yields error
+	if _, err := m.Execute(context.Background(), "unknown", nil); err == nil {
+		t.Fatal("Execute unknown tool expected error, got nil")
+	}
+
+	// Failing runner returns error directly
+	if err := m.Registry().Declare(Tool{
+		Name: "fail",
+		Run: func(context.Context, json.RawMessage, *Output) (any, error) {
+			return nil, errors.New("exec failed")
+		},
+	}); err != nil {
+		t.Fatalf("Declare fail: %v", err)
+	}
+	if _, err := m.Execute(context.Background(), "fail", nil); err == nil || err.Error() != "exec failed" {
+		t.Fatalf("Execute fail tool = %v, want 'exec failed'", err)
+	}
+
+	// Closed manager refuses Execute
+	m.Close()
+	if _, err := m.Execute(context.Background(), "add", nil); err == nil {
+		t.Fatal("Execute on closed manager expected error, got nil")
+	}
+}
+

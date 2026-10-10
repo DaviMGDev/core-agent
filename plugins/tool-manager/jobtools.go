@@ -126,11 +126,11 @@ func (m *Manager) callerJob(args json.RawMessage, out *Output) (*Job, error) {
 }
 
 // visibleFrom reports whether the caller may see job: a root call — the
-// top-level agent — sees the whole launch, and a call made under a job (a
-// subagent's) sees only that job's subtree.
+// top-level agent (or any call outside a job) — sees the whole launch, and
+// a call made under a job (a subagent's) sees only that job's subtree.
 func (m *Manager) visibleFrom(out *Output, job *Job) bool {
 	if out == nil || out.job == nil {
-		return false
+		return true
 	}
 	out.job.mu.Lock()
 	root := out.job.parent

@@ -1,6 +1,7 @@
 package bash
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -420,4 +421,35 @@ func TestReminderFiresWithoutKilling(t *testing.T) {
 		t.Fatalf("job state after kill = %s, want killed", final.State)
 	}
 	waitGone(t, shell)
+}
+
+func TestBashToolExecuteReturnsJobHandleSynchronously(t *testing.T) {
+	m := newManager(t, Options{})
+	ctx := context.Background()
+
+	res, err := m.Execute(ctx, ToolName, json.RawMessage(`{"command":"echo hello"}`))
+	if err != nil {
+		t.Fatalf("Execute bash: %v", err)
+	}
+	doc, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("res = %#v, want map[string]any", res)
+	}
+	if doc["status"] != "started" {
+		t.Fatalf("status = %v, want 'started'", doc["status"])
+	}
+	jobID, ok := doc["job"].(string)
+	if !ok || !strings.HasPrefix(jobID, "job-") {
+		t.Fatalf("job ID = %v, want 'job-X'", doc["job"])
+	}
+
+	// Verify the background job actually runs and finishes
+	job, found := m.Job(jobID)
+	if !found {
+		t.Fatalf("job %s not found in manager", jobID)
+	}
+	st := job.Wait()
+	if st.State != toolmanager.StateDone {
+		t.Fatalf("job state = %s, want done", st.State)
+	}
 }

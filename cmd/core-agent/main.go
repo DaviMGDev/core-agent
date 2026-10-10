@@ -239,6 +239,9 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 	if !ok {
 		return abort(errors.New("core-agent: agent plugin is not the native loop"))
 	}
+	agentComp.Execute = func(tool string, args json.RawMessage) (any, error) {
+		return manager.Execute(ctx, tool, args)
+	}
 	if err := manager.Registry().Declare(subagent.Tool(agentComp, manager, subagent.Options{Call: callGate})); err != nil {
 		return abort(fmt.Errorf("core-agent: subagent tool: %w", err))
 	}

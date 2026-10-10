@@ -20,11 +20,19 @@ injects it together with the notification bus.
 
 ## Semantics
 
-- A tool is `{name, description, argument schema, runner}`. The owner
-  declares; the manager lists. A missing name, a missing runner, or a
-  duplicate name is refused and the registry stays unchanged.
-- A call is a job, always: `Start(tool, args, tick?)` returns a handle at
-  once and never waits for the call to finish.
+- A tool is `{name, description, argument schema, runner, background?}`.
+  The owner declares; the manager lists. A missing name, a missing runner,
+  or a duplicate name is refused and the registry stays unchanged.
+- Tool execution is decoupled from jobs (issue #27):
+  - Direct execution: `Execute(ctx, tool, args)` runs a tool synchronously
+    in the active turn and returns its result directly. It does not allocate
+    a Job and emits zero lifecycle events.
+  - Background lifecycles: A tool declared with `Background: true` (e.g.
+    `bash`, `subagent`) launches a background Job via `Start` and returns
+    `{"job":"job-X","status":"started"}` synchronously to the active turn.
+  - Asynchronous workloads: Background jobs stream output, tick, and publish
+    terminal completion/failure events on the notification bus to wake the
+    agent in a subsequent turn.
 - A job's life: queued → running → done | failed, or killed from anywhere.
 - A refused start is a job too: it fails at once, with the reason.
 - `Peep(job)` returns state, last tick, and output so far.
@@ -40,8 +48,8 @@ injects it together with the notification bus.
 - The manager declares its own agent-facing surface (`JobTools`): `jobs`
   lists the visible jobs in creation order with id, tool, state, and age;
   `peep` returns one job's state, last tick, and output so far; `kill`
-  accepts a kill and reports the state at acceptance. The declarations bind
-  the model to report only what a tool confirmed.
+  accepts a kill and reports the state at acceptance. `JobTools` execute
+  synchronously via `Execute` and never spawn background jobs or emit wake events.
 - The agent tools scope like the guest imports: a root call — the top-level
   agent — sees the whole launch, and a call made under a job (a subagent's)
   sees only that job's subtree. An unknown or out-of-scope id is refused

@@ -147,6 +147,59 @@ check("the jobs overlay is read-only", vim.bo[fresh.bufs.jobs].modifiable == fal
 jobs.close()
 check("closing the jobs overlay hides it", fresh.wins.jobs == nil)
 
+-- Markdown rendering (Issue #24 & #26): buffer text is untouched Markdown with markdown filetype
+local fresh_messages = require("nvchat.messages")
+local current_chat = fresh.current
+table.insert(current_chat.messages, {
+  sender = "assistant",
+  time = "12:34",
+  body = "# Title\n\n**bold** and `code`\n\n- item 1\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+})
+fresh_messages.render()
+check("messages buffer has markdown filetype", vim.bo[fresh.bufs.messages].filetype == "markdown")
+
+-- Block selection and yank preserves raw Markdown syntax tokens (D3, D24)
+local md_block = fresh.message_blocks[#fresh.message_blocks]
+fresh_messages.yank_blocks({ md_block })
+local md_yanked = vim.fn.getreg('"')
+check(
+  "yank preserves untouched raw Markdown tokens",
+  md_yanked:find("# Title", 1, true) ~= nil
+    and md_yanked:find("**bold**", 1, true) ~= nil
+    and md_yanked:find("`code`", 1, true) ~= nil
+    and md_yanked:find("- item 1", 1, true) ~= nil
+    and md_yanked:find("| a | b |", 1, true) ~= nil
+)
+check("message buffer retains untouched Markdown text", vim.api.nvim_buf_get_lines(fresh.bufs.messages, md_block.first, md_block.last, false)[1] == "# Title")
+
+-- Messages with escaped \n sequences split into distinct buffer lines
+table.insert(current_chat.messages, {
+  sender = "assistant",
+  time = "12:35",
+  body = "First line\\nSecond line\\n- bullet item",
+})
+fresh_messages.render()
+local escaped_block = fresh.message_blocks[#fresh.message_blocks]
+local escaped_lines = vim.api.nvim_buf_get_lines(fresh.bufs.messages, escaped_block.first, escaped_block.last, false)
+check(
+  "escaped \\n sequences split into multiple buffer lines without literal \\n characters",
+  #escaped_lines >= 3
+    and escaped_lines[1] == "First line"
+    and escaped_lines[2] == "Second line"
+    and escaped_lines[3] == "- bullet item"
+)
+
+-- Selection highlight is only visible when the messages window is active
+vim.api.nvim_set_current_win(fresh.wins.messages)
+fresh_messages.highlight_selection()
+local sel_marks_in_win = vim.api.nvim_buf_get_extmarks(fresh.bufs.messages, fresh.ns_sel, 0, -1, {})
+check("selection highlight active when inside messages window", #sel_marks_in_win > 0)
+
+vim.api.nvim_set_current_win(fresh.wins.composer)
+fresh_messages.highlight_selection()
+local sel_marks_out_win = vim.api.nvim_buf_get_extmarks(fresh.bufs.messages, fresh.ns_sel, 0, -1, {})
+check("selection highlight cleared when outside messages window", #sel_marks_out_win == 0)
+
 if failures > 0 then
   print(failures .. " check(s) failed")
   vim.cmd("cquit 3")

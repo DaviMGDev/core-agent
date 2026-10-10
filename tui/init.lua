@@ -30,6 +30,7 @@ if vim.pack and vim.pack.add then
     },
     "https://github.com/nvim-lua/plenary.nvim",
     "https://github.com/MunifTanjim/nui.nvim",
+    "https://github.com/MeanderingProgrammer/render-markdown.nvim",
   }, { confirm = false })
   if not ok then
     vim.notify("nvchat: plugin install failed: " .. tostring(err), vim.log.levels.ERROR)

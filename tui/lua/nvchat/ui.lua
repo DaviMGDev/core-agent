@@ -33,6 +33,8 @@ end
 local MESSAGES_OPTS = vim.tbl_extend("force", BASE_WIN_OPTS, {
   wrap = true,
   linebreak = true,
+  conceallevel = 2,
+  concealcursor = "",
 })
 local COMPOSER_OPTS = vim.tbl_extend("force", BASE_WIN_OPTS, {
   wrap = true,
@@ -337,6 +339,8 @@ function M.start()
   vim.o.statusline = "%!v:lua.require'nvchat.ui'.statusline()"
 
   state.bufs.messages = scratch_buffer("nvchat://messages")
+  vim.bo[state.bufs.messages].filetype = "markdown"
+  pcall(vim.treesitter.start, state.bufs.messages, "markdown")
   state.bufs.composer = composer_buffer()
   state.bufs.overlay = scratch_buffer("nvchat://sessions")
   state.bufs.jobs = scratch_buffer("nvchat://jobs")

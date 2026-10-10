@@ -20,9 +20,10 @@ import (
 // model story.
 func TestRunJobToolsSession(t *testing.T) {
 	var (
-		mu     sync.Mutex
-		bodies []string
-		target *toolmanager.Job
+		mu      sync.Mutex
+		bodies  []string
+		target  *toolmanager.Job
+		manager *toolmanager.Manager
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -30,10 +31,11 @@ func TestRunJobToolsSession(t *testing.T) {
 		bodies = append(bodies, string(raw))
 		mu.Unlock()
 		w.Header().Set("content-type", "application/json")
-		switch line := lastUserMessage(raw); {
+		line := lastUserMessage(raw)
+		switch {
 		case strings.HasPrefix(line, "list the jobs"):
 			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_jobs","type":"function","function":{"name":"jobs","arguments":"{}"}}]}}]}`)
-		case strings.Contains(line, `"result":[`):
+		case strings.HasPrefix(line, "["), strings.Contains(line, `"result":[`):
 			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_peep","type":"function","function":{"name":"peep","arguments":"{\"job\":\"job-1\"}"}}]}}]}`)
 		case strings.Contains(line, `"state":"killed"`):
 			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_unknown","type":"function","function":{"name":"peep","arguments":"{\"job\":\"job-99\"}"}}]}}]}`)
@@ -50,6 +52,7 @@ func TestRunJobToolsSession(t *testing.T) {
 	sessCfg := sessionFrom(t, testResolved(t), "tester")
 	sessCfg.providers = providerDoc(testProvider{Name: "local", Endpoint: srv.URL, Models: []string{"gemma4:cloud"}})
 	sessCfg.onComposed = func(m *toolmanager.Manager) {
+		manager = m
 		_ = m.Registry().Declare(toolmanager.Tool{Name: "slow", Run: func(ctx context.Context, _ json.RawMessage, out *toolmanager.Output) (any, error) {
 			_, _ = out.Write([]byte("working\n"))
 			<-ctx.Done()
@@ -68,7 +71,7 @@ func TestRunJobToolsSession(t *testing.T) {
 		// Generous: under -race the composition and the wake chain are both
 		// slow on this hardware (issue #14), so the budget covers the chain,
 		// not the machine's speed.
-		deadline := time.Now().Add(150 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
 			if strings.Contains(out.String(), marker) {
 				return
@@ -110,6 +113,9 @@ func TestRunJobToolsSession(t *testing.T) {
 
 	if target == nil {
 		t.Fatal("the scripted job never started")
+	}
+	if len(manager.Jobs()) != 1 {
+		t.Errorf("len(manager.Jobs()) = %d, want exactly 1 (jobs and peep must not spawn jobs)", len(manager.Jobs()))
 	}
 	if state := target.State(); state != toolmanager.StateKilled {
 		t.Errorf("job state after the session = %q, want killed", state)

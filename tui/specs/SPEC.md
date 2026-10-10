@@ -370,6 +370,12 @@ switches, and restored when a session opens (D18).
   copied, and normal-mode `y`/`yy` keep the single selected block. Reason:
   user direction — the writer must be able to copy a whole conversation,
   not one message at a time.
+- **D25 — Transcript Markdown rendering via render-markdown.nvim (Issue #24 & #26).**
+  The message-list buffer sets `filetype=markdown` with conceal enabled (`conceallevel=2`).
+  Markdown formatting (headings, code blocks, lists, aligned tables) is visually
+  rendered via `render-markdown.nvim` using Neovim extmarks and conceal. The buffer text
+  itself remains pristine, untouched Markdown so that block selection (D3) and block
+  yank (D24) copy uncorrupted raw Markdown with syntax tokens intact.
 
 ## Stack
 
@@ -379,8 +385,8 @@ switches, and restored when a session opens (D18).
   configuration — repo root `init.lua` plus `lua/nvchat/` modules
   (`state`, `store`, `ui`, `files`, `sessions`, `jobs`, `messages`,
   `composer`, `draft`, `render`). The repository is the config; neo-tree v3 with
-  `plenary.nvim` and `nui.nvim` is installed by `vim.pack` under the
-  `nvchat` appname (D1, D19).
+  `plenary.nvim`, `nui.nvim`, and `render-markdown.nvim` is installed by `vim.pack` under the
+  `nvchat` appname (D1, D19, D25).
 - **Design formats:** LAYOUT v1 ([chat.layout.txt](../chat.layout.txt)),
   Pseudolanguage ([chat.pseudo](../chat.pseudo)), SVG
   ([chat.wireframe.svg](../chat.wireframe.svg),

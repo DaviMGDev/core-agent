@@ -23,6 +23,10 @@ type Tool struct {
 	// Run executes one call. It runs in its own goroutine and observes ctx
 	// for kill: returning at its next safe point is the contract.
 	Run Runner
+	// Background marks tools that launch an asynchronous lifecycle (like
+	// bash or subagent). When executed via Manager.Execute, the manager starts
+	// a Job and returns {"job":"job-X","status":"started"} synchronously.
+	Background bool
 }
 
 // Runner executes a tool call. out collects output-so-far for peep; the

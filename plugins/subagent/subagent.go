@@ -94,6 +94,7 @@ type wakeResponse struct {
 func Tool(loop Agent, jobs Jobs, opts Options) toolmanager.Tool {
 	return toolmanager.Tool{
 		Name:        ToolName,
+		Background:  true,
 		Description: "call an agent with a brief and wait for its reply",
 		Schema: json.RawMessage(`{"type":"object","properties":{` +
 			`"brief":{"type":"string","description":"the child's only input"},` +

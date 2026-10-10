@@ -8,6 +8,23 @@ local M = {}
 local state = require("nvchat.state")
 local render = require("nvchat.render")
 
+-- split_message_body(body) -> splits a message body into lines, handling
+-- actual line breaks (\n, \r\n) as well as unescaping literal "\n" sequences
+-- so that markdown formatted content is rendered across distinct lines.
+local function split_message_body(body)
+  if not body or body == "" then
+    return {}
+  end
+  local text = body:gsub("\r\n", "\n"):gsub("\r", "\n")
+  if text:find("\\n") then
+    text = text:gsub("\\n", "\n")
+  end
+  if text:find("\\t") then
+    text = text:gsub("\\t", "\t")
+  end
+  return vim.split(text, "\n", { plain = true })
+end
+
 -- render() -> draws the open session's messages; records block ranges in
 -- state.message_blocks so selection and yank can address whole blocks.
 function M.render()
@@ -18,7 +35,7 @@ function M.render()
     for _, message in ipairs(state.current.messages) do
       local first = #lines + 1
       table.insert(lines, message.sender .. "  " .. message.time)
-      for _, body_line in ipairs(vim.split(message.body, "\n", { plain = true })) do
+      for _, body_line in ipairs(split_message_body(message.body)) do
         table.insert(lines, body_line)
       end
       table.insert(lines, "")
@@ -67,6 +84,11 @@ function M.highlight_selection()
     return
   end
   vim.api.nvim_buf_clear_namespace(state.bufs.messages, ns, 0, -1)
+
+  -- Only highlight a block if the current active window is the messages window
+  if vim.api.nvim_get_current_win() ~= win then
+    return
+  end
 
   local line = vim.api.nvim_win_get_cursor(win)[1]
   for _, block in ipairs(state.message_blocks) do
@@ -266,6 +288,15 @@ function M.attach()
     buffer = state.bufs.messages,
     callback = M.highlight_selection,
     desc = "nvchat: select the message block under the cursor",
+  })
+  vim.api.nvim_create_autocmd({ "WinLeave", "BufLeave" }, {
+    buffer = state.bufs.messages,
+    callback = function()
+      if state.ns_sel and state.bufs.messages and vim.api.nvim_buf_is_valid(state.bufs.messages) then
+        vim.api.nvim_buf_clear_namespace(state.bufs.messages, state.ns_sel, 0, -1)
+      end
+    end,
+    desc = "nvchat: clear selection highlight when leaving messages buffer",
   })
   vim.keymap.set("n", "j", M.move_down, {
     buffer = state.bufs.messages,

@@ -10,6 +10,14 @@ local M = {}
 function M.setup()
   vim.g.nvchat_loaded = true
 
+  pcall(vim.cmd, "packadd render-markdown.nvim")
+  local rm_ok, rm = pcall(require, "render-markdown")
+  if rm_ok then
+    rm.setup({
+      file_types = { "markdown", "nvchat" },
+    })
+  end
+
   vim.schedule(function()
     -- vim.g.nvchat_no_ui lets tests and headless probes boot the config
     -- without building the chat screen.

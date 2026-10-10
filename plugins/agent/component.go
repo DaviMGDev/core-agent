@@ -38,6 +38,7 @@ type Jobs interface {
 type Component struct {
 	Log     io.Writer
 	Jobs    Jobs
+	Execute func(tool string, args json.RawMessage) (any, error)
 	Publish func(text string) error
 
 	history keys.History
@@ -202,6 +203,7 @@ func (c *Component) deps(cfg Config, publish bool) Deps {
 			}
 			return ParseAnswer(answer), nil
 		},
+		Execute: c.Execute,
 		StartJob: func(tool string, args json.RawMessage) (string, error) {
 			if c.Jobs == nil {
 				return "", errors.New("agent: no job service configured")

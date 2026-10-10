@@ -18,12 +18,12 @@ if [ -n "$leaked" ]; then
 fi
 echo "ok: only store.lua mentions the core"
 
-timeout 300 nvim --headless -u NONE \
+timeout 60 nvim --headless -u NONE \
   -c "let g:nvchat_core='$CORE'" \
   -c "let g:nvchat_core_args=['-mock']" \
   -c "luafile tui/tests/store_test.lua"
 
-timeout 300 nvim --headless -u NONE \
+timeout 60 nvim --headless -u NONE \
   -c "let g:nvchat_core='$CORE'" \
   -c "let g:nvchat_core_args=['-mock']" \
   -c "luafile tui/tests/ui_test.lua"

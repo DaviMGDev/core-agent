@@ -6,6 +6,8 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -106,6 +108,7 @@ type Deps struct {
 	Recent   func(n int) ([]Message, error)
 	Project  func(msgs []Message) ([]Message, error)
 	Respond  func(text string, context []Message, tools []Tool) (Answer, error)
+	Execute  func(tool string, args json.RawMessage) (any, error)
 	StartJob func(tool string, args json.RawMessage) (string, error)
 	Publish  func(text string) error
 }
@@ -154,11 +157,12 @@ func SystemMessage(cfg Config) Message {
 
 // RunTurn runs one turn from wake to quiescence: append the line, project the
 // agent's own context, ask the model with the presented tool surface under
-// the assembled system message, and act on the answer. A tool call starts a
-// job and ends the turn without a message; the job's completion or a tick
-// wakes the next turn. Silence is a legitimate outcome; at most one
-// chat.message leaves a turn. The system message is assembled per turn — it
-// travels with the request, never into the record.
+// the assembled system message, and act on the answer. Synchronous tool calls
+// execute in-turn and update context until the model speaks or goes silent.
+// A tool call that falls back to StartJob ends the turn without a message;
+// the job's completion or a tick wakes the next turn. Silence is a legitimate
+// outcome; at most one chat.message leaves a turn. The system message is
+// assembled per turn — it travels with the request, never into the record.
 func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 	cfg = cfg.Normalized()
 	if err := deps.Append("user", line); err != nil {
@@ -174,28 +178,80 @@ func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 	}
 	presented := Present(cfg)
 	context := append([]Message{SystemMessage(cfg)}, projected...)
-	answer, err := deps.Respond(line, context, presented)
-	if err != nil {
-		return TurnResult{}, err
-	}
-	if answer.Tool != "" {
-		job, err := deps.StartJob(resolveCall(cfg, answer.Tool), answer.Args)
+
+	const maxSteps = 10
+	for step := 0; step < maxSteps; step++ {
+		answer, err := deps.Respond(line, context, presented)
 		if err != nil {
 			return TurnResult{}, err
 		}
-		return TurnResult{Job: job}, nil
+		if answer.Tool != "" {
+			if deps.Execute != nil {
+				targetTool := resolveCall(cfg, answer.Tool)
+				res, execErr := deps.Execute(targetTool, answer.Args)
+				if execErr == nil {
+					if doc, ok := res.(map[string]any); ok && doc["status"] == "started" && doc["job"] != nil {
+						jobID, _ := doc["job"].(string)
+						return TurnResult{Job: jobID}, nil
+					}
+				}
+				callText := formatToolCall(answer.Tool, answer.Args)
+				resText := formatToolResult(res, execErr)
+				context = append(context, Message{Role: "assistant", Text: callText})
+				context = append(context, Message{Role: "user", Text: resText})
+				continue
+			}
+			if deps.StartJob != nil {
+				job, err := deps.StartJob(resolveCall(cfg, answer.Tool), answer.Args)
+				if err != nil {
+					return TurnResult{}, err
+				}
+				return TurnResult{Job: job}, nil
+			}
+			return TurnResult{}, errors.New("agent: no execution path configured for tool call")
+		}
+		if answer.Silence || strings.TrimSpace(answer.Text) == "" {
+			return TurnResult{}, nil
+		}
+		text := strings.TrimSpace(answer.Text)
+		text = strings.ReplaceAll(text, "\r\n", "\n")
+		if err := deps.Append("assistant", text); err != nil {
+			return TurnResult{}, err
+		}
+		if err := deps.Publish(text); err != nil {
+			return TurnResult{}, err
+		}
+		return TurnResult{Spoke: true, Text: text}, nil
 	}
-	if answer.Silence || strings.TrimSpace(answer.Text) == "" {
-		return TurnResult{}, nil
+	return TurnResult{}, errors.New("agent: exceeded maximum tool iterations in turn")
+}
+
+func formatToolCall(tool string, args json.RawMessage) string {
+	doc := map[string]any{"tool": tool}
+	if len(args) > 0 {
+		doc["args"] = args
 	}
-	text := oneLine(answer.Text)
-	if err := deps.Append("assistant", text); err != nil {
-		return TurnResult{}, err
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Sprintf(`{"tool":%q}`, tool)
 	}
-	if err := deps.Publish(text); err != nil {
-		return TurnResult{}, err
+	return string(b)
+}
+
+func formatToolResult(res any, err error) string {
+	if err != nil {
+		doc := map[string]any{"error": err.Error()}
+		b, _ := json.Marshal(doc)
+		return string(b)
 	}
-	return TurnResult{Spoke: true, Text: text}, nil
+	if res == nil {
+		return "{}"
+	}
+	b, jsonErr := json.Marshal(res)
+	if jsonErr != nil {
+		return fmt.Sprint(res)
+	}
+	return string(b)
 }
 
 // Present returns the tool surface the model sees this turn: configured tools

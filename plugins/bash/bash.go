@@ -76,7 +76,8 @@ type Result struct {
 // Tool returns the manager tool that runs one shell command per job.
 func Tool(opts Options) toolmanager.Tool {
 	return toolmanager.Tool{
-		Name: ToolName,
+		Name:       ToolName,
+		Background: true,
 		Description: "run a shell command as one job and return its factual result — exit code, stdout, stderr. " +
 			"Report only what the process produced; never invent a diagnosis for a failure.",
 		Schema: json.RawMessage(`{"type":"object","properties":{` +

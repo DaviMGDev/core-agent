@@ -519,15 +519,17 @@ cross-process or out-of-tree composition; any layout beyond `plugins/`,
   so no wake could reach it (memento D14: a wake is a call like any other). The
   terminal is therefore a view: the transcript stays chat-history's, and the
   terminal's answer to a line carries no text.
-- **D16 — The agent layer is jobs, events, and one loop.** A call is a job,
-  always (tool-manager); components hear each other over a queued bus
-  (notifications); the agent is a native component whose turn runs from wake to
-  quiescence, yields at most one `chat.message`, and ends on a tool call.
-  The loop is addressable — the terminal, the host waker, and a subagent's
-  runner reach it the same way — and one implementation serves the top-level
-  agent and every subagent. A subagent call is a manager job whose runner
-  drives the child's turns; the child's conversation and context are its own,
-  its speech stays private, and visibility and kill are subtree-only.
+- **D16 — The agent layer decouples synchronous tools from background jobs (issue #27).**
+  Tool execution is synchronous and in-turn: tools return values directly to the
+  caller without yielding the turn loop, while long-running tasks (`bash`, `subagent`)
+  explicitly initiate background jobs and return job handles. Job management tools
+  (`jobs`, `peep`, `kill`) execute directly against state without spawning jobs or
+  triggering recursive wake loops. The agent loop runs from wake to quiescence,
+  executes tools in-turn, yields at most one `chat.message`, and background jobs
+  stream notifications to wake subsequent turns. The loop is addressable — the
+  terminal, the host waker, and a subagent's runner reach it the same way. A subagent
+  call is a manager job whose runner drives the child's turns; the child's conversation
+  and context are its own, its speech stays private, and visibility and kill are subtree-only.
 - **D17 — Configuration lives in `.core/`.** The entry reads a user scope
   (default `~/.core`, `CORE_DIR` relocates) and a project scope (`./.core`)
   of the same four files, layered per key over embedded defaults

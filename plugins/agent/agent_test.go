@@ -8,16 +8,20 @@ import (
 
 // recordingDeps captures what one turn did.
 type recordingDeps struct {
-	appended  []Message
-	published []string
-	jobs      []string
-	presented []Tool
-	responded []Message
-	answer    Answer
+	appended   []Message
+	published  []string
+	jobs       []string
+	presented  []Tool
+	responded  []Message
+	answer     Answer
+	answers    []Answer
+	executed   []string
+	useExecute bool
+	executeFn  func(tool string, args json.RawMessage) (any, error)
 }
 
 func (r *recordingDeps) deps() Deps {
-	return Deps{
+	d := Deps{
 		Append: func(role, text string) error {
 			r.appended = append(r.appended, Message{Role: role, Text: text})
 			return nil
@@ -31,6 +35,11 @@ func (r *recordingDeps) deps() Deps {
 		Respond: func(text string, context []Message, tools []Tool) (Answer, error) {
 			r.presented = tools
 			r.responded = context
+			if len(r.answers) > 0 {
+				ans := r.answers[0]
+				r.answers = r.answers[1:]
+				return ans, nil
+			}
 			return r.answer, nil
 		},
 		StartJob: func(tool string, args json.RawMessage) (string, error) {
@@ -42,6 +51,16 @@ func (r *recordingDeps) deps() Deps {
 			return nil
 		},
 	}
+	if r.useExecute || r.executeFn != nil {
+		d.Execute = func(tool string, args json.RawMessage) (any, error) {
+			r.executed = append(r.executed, tool)
+			if r.executeFn != nil {
+				return r.executeFn(tool, args)
+			}
+			return map[string]any{"status": "ok"}, nil
+		}
+	}
+	return d
 }
 
 func TestTurnSpeaksOnce(t *testing.T) {
@@ -50,13 +69,13 @@ func TestTurnSpeaksOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	if !res.Spoke || res.Text != "hello there" {
-		t.Fatalf("result = %+v, want one flattened message", res)
+	if !res.Spoke || res.Text != "hello\nthere" {
+		t.Fatalf("result = %+v, want multiline preserved", res)
 	}
 	if len(r.appended) != 2 || r.appended[0].Role != "user" || r.appended[1].Role != "assistant" {
 		t.Fatalf("appends = %+v, want a user and an assistant turn", r.appended)
 	}
-	if len(r.published) != 1 || r.published[0] != "hello there" {
+	if len(r.published) != 1 || r.published[0] != "hello\nthere" {
 		t.Fatalf("published = %v, want one chat.message", r.published)
 	}
 }
@@ -234,3 +253,74 @@ func TestPresentCarriesParametersThroughHideAndRename(t *testing.T) {
 		t.Fatalf("kept tool parameters = %s, want them unchanged", got[1].Parameters)
 	}
 }
+
+func TestTurnExecutesToolSynchronouslyInTurn(t *testing.T) {
+	r := &recordingDeps{
+		answers: []Answer{
+			{Tool: "calc", Args: json.RawMessage(`{"a":2,"b":3}`)},
+			{Text: "the result is 5"},
+		},
+		executeFn: func(tool string, args json.RawMessage) (any, error) {
+			if tool != "calc" {
+				t.Fatalf("execute tool = %q, want calc", tool)
+			}
+			return map[string]int{"sum": 5}, nil
+		},
+	}
+	res, err := RunTurn(Config{}, "calculate 2+3", r.deps())
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	// Proves turn was not yielded early as a job
+	if res.Job != "" {
+		t.Fatalf("res.Job = %q, want empty", res.Job)
+	}
+	if !res.Spoke || res.Text != "the result is 5" {
+		t.Fatalf("res = %+v, want spoke 'the result is 5'", res)
+	}
+	if len(r.executed) != 1 || r.executed[0] != "calc" {
+		t.Fatalf("executed tools = %v, want ['calc']", r.executed)
+	}
+	if len(r.published) != 1 || r.published[0] != "the result is 5" {
+		t.Fatalf("published = %v, want ['the result is 5']", r.published)
+	}
+	// Verify final assistant speech landed in appends
+	if len(r.appended) != 2 || r.appended[1].Role != "assistant" || r.appended[1].Text != "the result is 5" {
+		t.Fatalf("appended = %+v, want user and assistant final speech", r.appended)
+	}
+	// Verify context seen on second prompt contained the tool call and tool result
+	if len(r.responded) < 3 {
+		t.Fatalf("responded context length = %d, want at least 3", len(r.responded))
+	}
+	lastContext := r.responded[len(r.responded)-1]
+	if lastContext.Role != "user" || !strings.Contains(lastContext.Text, `"sum":5`) {
+		t.Fatalf("last context item = %+v, want tool result containing sum:5", lastContext)
+	}
+}
+
+func TestTurnExecutesMultipleToolsInSameTurn(t *testing.T) {
+	r := &recordingDeps{
+		answers: []Answer{
+			{Tool: "step1", Args: json.RawMessage(`{"val":1}`)},
+			{Tool: "step2", Args: json.RawMessage(`{"val":2}`)},
+			{Text: "both finished"},
+		},
+		executeFn: func(tool string, args json.RawMessage) (any, error) {
+			return map[string]string{"tool": tool, "status": "done"}, nil
+		},
+	}
+	res, err := RunTurn(Config{}, "start sequence", r.deps())
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if !res.Spoke || res.Text != "both finished" {
+		t.Fatalf("res = %+v, want spoke 'both finished'", res)
+	}
+	if len(r.executed) != 2 || r.executed[0] != "step1" || r.executed[1] != "step2" {
+		t.Fatalf("executed tools = %v, want ['step1', 'step2']", r.executed)
+	}
+	if len(r.published) != 1 || r.published[0] != "both finished" {
+		t.Fatalf("published = %v, want ['both finished']", r.published)
+	}
+}
+

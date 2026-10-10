@@ -3,6 +3,7 @@ package subagent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"strconv"
 	"sync"
 	"testing"
@@ -230,5 +231,38 @@ func TestCallReturnsTheConversationWhenAsked(t *testing.T) {
 	}
 	if len(res.Conversation) != 2 || res.Conversation[0].Role != "user" || res.Conversation[1].Role != "assistant" {
 		t.Fatalf("conversation = %+v, want the child's user and assistant turns", res.Conversation)
+	}
+}
+
+func TestSubagentToolExecuteReturnsJobHandleSynchronously(t *testing.T) {
+	loop := &fakeLoop{answer: func(w agent.Wake) (string, string, []agent.Message) {
+		return "child: " + w.Line, "", nil
+	}}
+	m, err := newManager(loop, Options{})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	res, err := m.Execute(context.Background(), ToolName, json.RawMessage(`{"brief":"say hello"}`))
+	if err != nil {
+		t.Fatalf("Execute subagent: %v", err)
+	}
+	doc, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("res = %#v, want map[string]any", res)
+	}
+	if doc["status"] != "started" {
+		t.Fatalf("status = %v, want 'started'", doc["status"])
+	}
+	jobID, ok := doc["job"].(string)
+	if !ok || !strings.HasPrefix(jobID, "job-") {
+		t.Fatalf("job ID = %v, want 'job-X'", doc["job"])
+	}
+	job, found := m.Job(jobID)
+	if !found {
+		t.Fatalf("job %s not found in manager", jobID)
+	}
+	st := job.Wait()
+	if st.State != toolmanager.StateDone {
+		t.Fatalf("job state = %s, want done", st.State)
 	}
 }
