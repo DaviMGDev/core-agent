@@ -207,3 +207,148 @@ func TestWakeNeverPreempts(t *testing.T) {
 		t.Fatalf("max concurrent wakes = %d, want 1", maxActive)
 	}
 }
+
+// manualClock is an injectable boundary source: the test fires one boundary
+// by sending on the channel the bus reads.
+type manualClock struct {
+	boundaries chan time.Time
+}
+
+func newManualClock() *manualClock {
+	return &manualClock{boundaries: make(chan time.Time, 16)}
+}
+
+func (c *manualClock) after(time.Duration) <-chan time.Time { return c.boundaries }
+
+func (c *manualClock) fire() { c.boundaries <- time.Now() }
+
+// never is a boundary source that never fires; the ticker still observes
+// Close.
+func never(time.Duration) <-chan time.Time { return make(chan time.Time) }
+
+func TestClockBatchesWithinAPeriod(t *testing.T) {
+	bus := New(WithClock(time.Hour, never))
+	defer bus.Close()
+	w := &blockingWaker{}
+	bus.SubscribeClocked(TopicJobTick, w)
+
+	bus.Publish(TopicJobTick, []byte("1"))
+	bus.Publish(TopicJobTick, []byte("2"))
+	if wakes, _, _ := w.snapshot(); len(wakes) != 0 {
+		t.Fatalf("wakes before a boundary = %d, want 0", len(wakes))
+	}
+
+	bus.Flush()
+	waitFor(t, "the batch wake", func() bool {
+		wakes, _, _ := w.snapshot()
+		return len(wakes) == 1
+	})
+	wakes, _, _ := w.snapshot()
+	if len(wakes[0]) != 2 || string(wakes[0][0].Payload) != "1" || string(wakes[0][1].Payload) != "2" {
+		t.Fatalf("wake events = %v, want 1,2 in one wake", wakes[0])
+	}
+}
+
+func TestClockEmptyPeriodWakesNoOne(t *testing.T) {
+	bus := New(WithClock(time.Hour, never))
+	defer bus.Close()
+	w := &blockingWaker{}
+	bus.SubscribeClocked(TopicJobTick, w)
+
+	bus.Flush()
+	if wakes, _, _ := w.snapshot(); len(wakes) != 0 {
+		t.Fatalf("an empty boundary woke someone: %v", wakes)
+	}
+
+	bus.Publish(TopicJobTick, []byte("1"))
+	bus.Flush()
+	waitFor(t, "the wake", func() bool {
+		wakes, _, _ := w.snapshot()
+		return len(wakes) == 1
+	})
+
+	bus.Flush()
+	if wakes, _, _ := w.snapshot(); len(wakes) != 1 {
+		t.Fatalf("an empty boundary woke someone: %v", wakes)
+	}
+}
+
+func TestClockEventsDuringWakeAwaitTheNextBoundary(t *testing.T) {
+	bus := New(WithClock(time.Hour, never))
+	defer bus.Close()
+	w := &blockingWaker{release: make(chan struct{})}
+	bus.SubscribeClocked(TopicJobTick, w)
+
+	bus.Publish(TopicJobTick, []byte("first"))
+	bus.Flush()
+	waitFor(t, "the blocked wake", func() bool {
+		_, active, _ := w.snapshot()
+		return active == 1
+	})
+
+	bus.Publish(TopicJobTick, []byte("second"))
+	bus.Flush()
+	if _, active, _ := w.snapshot(); active != 1 {
+		t.Fatalf("active wakes = %d, want 1: events during a wake must wait for the next boundary", active)
+	}
+	if wakes, _, _ := w.snapshot(); len(wakes) != 1 {
+		t.Fatalf("wakes while one is in flight = %d, want 1: the second event must wait for the next boundary", len(wakes))
+	}
+
+	close(w.release)
+	waitFor(t, "the first wake to finish", func() bool {
+		_, active, _ := w.snapshot()
+		return active == 0
+	})
+	bus.Flush()
+	waitFor(t, "the second boundary", func() bool {
+		wakes, _, _ := w.snapshot()
+		return len(wakes) == 2
+	})
+	wakes, _, _ := w.snapshot()
+	if len(wakes[1]) != 1 || string(wakes[1][0].Payload) != "second" {
+		t.Fatalf("second wake events = %v, want second", wakes[1])
+	}
+}
+
+func TestClockTickerDrivesBoundaries(t *testing.T) {
+	clock := newManualClock()
+	bus := New(WithClock(time.Hour, clock.after))
+	defer bus.Close()
+	w := &blockingWaker{}
+	bus.SubscribeClocked(TopicJobCompleted, w)
+
+	bus.Publish(TopicJobCompleted, []byte("x"))
+	clock.fire()
+	waitFor(t, "the boundary wake", func() bool {
+		wakes, _, _ := w.snapshot()
+		return len(wakes) == 1
+	})
+}
+
+func TestClockedWithoutAPeriodIsImmediate(t *testing.T) {
+	bus := New()
+	defer bus.Close()
+	w := &blockingWaker{}
+	bus.SubscribeClocked(TopicJobCompleted, w)
+
+	bus.Publish(TopicJobCompleted, []byte("x"))
+	waitFor(t, "the immediate wake", func() bool {
+		wakes, _, _ := w.snapshot()
+		return len(wakes) == 1
+	})
+}
+
+func TestClockCloseStopsBoundaries(t *testing.T) {
+	clock := newManualClock()
+	bus := New(WithClock(time.Hour, clock.after))
+	w := &blockingWaker{}
+	bus.SubscribeClocked(TopicJobCompleted, w)
+
+	bus.Close()
+	bus.Publish(TopicJobCompleted, []byte("x"))
+	clock.fire()
+	if wakes, _, _ := w.snapshot(); len(wakes) != 0 {
+		t.Fatalf("a closed bus woke someone: %v", wakes)
+	}
+}

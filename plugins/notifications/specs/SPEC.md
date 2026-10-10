@@ -34,6 +34,11 @@ D11-D13), and `cmd/core-agent` injects it into the memento engine.
   busy waits for it to return.
 - One wake drains every event queued for the subscriber at that point:
   N events become one turn.
+- `SubscribeClocked(topic, waker)` opts a subscription into the bus clock:
+  its queued events flush together on each period boundary, a boundary with
+  nothing queued wakes no one, and events published during a wake wait for
+  the next boundary. `Flush` performs one boundary and `Close` stops the
+  ticker; a bus without a period keeps every subscription immediate.
 - A driver may wait for a subscription to drain (`WaitIdle`): the wait returns
   once no event is queued and no wake is in flight, so a caller can let a
   subscriber finish rendering before it continues.
@@ -49,6 +54,13 @@ wake, and no wake preempts a call in flight. Events published after the
 drain are delivered in a later wake. `WaitIdle` closes the same bookkeeping:
 the subscription is idle again only after the wake returned and the queue is
 empty, which is what a session driver waits on to keep output ordered.
+
+A clocked subscription swaps immediate delivery for the boundary: publishing
+queues and marks the subscription scheduled, and `Flush` — the ticker calls
+it on each period — spawns one wake for every clocked subscription whose
+queue is non-empty. Events that arrive while a wake runs wait for the next
+boundary, so a period's events travel together and no wake overlaps another.
+An empty boundary spawns nothing, so an idle period wakes no one.
 
 ## Topics
 
@@ -88,3 +100,8 @@ pattern subscriptions; per-subscriber backpressure or quotas.
   waiting room; a wake is a call like any other.
 - **N4 — Topics are vocabulary, not a closed set.** The named topics are the
   layer's shared language; the bus itself carries any string.
+- **N5 — The clock batches, it never hides.** A clocked subscription's
+  non-empty queue flushes as one wake on each boundary; an empty boundary
+  wakes no one; and the wake is a normal wake — the bus drops no event and
+  suppresses no subscriber. Immediate subscriptions are never delayed by the
+  clock.
