@@ -22,6 +22,7 @@ import (
 
 	"github.com/DaviMGDev/core-agent/internal/config"
 	"github.com/DaviMGDev/core-agent/plugins/agent"
+	"github.com/DaviMGDev/core-agent/plugins/bash"
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	contextmanager "github.com/DaviMGDev/core-agent/plugins/context-manager"
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
@@ -240,6 +241,11 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 	}
 	if err := manager.Registry().Declare(subagent.Tool(agentComp, manager, subagent.Options{Call: callGate})); err != nil {
 		return abort(fmt.Errorf("core-agent: subagent tool: %w", err))
+	}
+	// The bash tool joins the registry beside the subagent: one call is one
+	// job running a shell command in the core's environment, result factual.
+	if err := manager.Registry().Declare(bash.Tool(bash.Options{})); err != nil {
+		return abort(fmt.Errorf("core-agent: bash tool: %w", err))
 	}
 	// The job surface joins the registry beside the subagent: every tool in
 	// the registry is presented to the agent natively, so the model can list,
