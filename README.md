@@ -40,6 +40,21 @@ Models call tools natively over OpenAI-compatible interfaces:
 - **Provider transport:** When the presented surface is non-empty, `model-manager` carries the OpenAI-compatible `tools` array in the request body (omitted when empty).
 - **Normalization:** Provider responses carrying native `tool_calls` are normalized into the agent's `{"tool", "args"}` directive (the first call stands, further calls drop). The directive path remains identical for mock, scripted, and native providers alike.
 
+The tools the composition declares:
+
+| Tool | Role |
+|---|---|
+| `subagent` | call an agent with a brief; the reply returns as the job's result |
+| `jobs` | list the jobs visible to the caller in creation order: id, tool, state, and age |
+| `peep` | observe one job: state, last tick, and output so far |
+| `kill` | accept a kill, honored at the job's next safe point; the result reports the state at acceptance |
+
+Visibility is subtree-scoped: the top-level agent sees the launch, and a
+subagent sees only the subtree it runs under. The tool descriptions bind the
+model to report only what a tool confirmed — an unknown or failed id comes
+back as a factual error, never a narrative. Ticks still never paint: they
+wake the agent in clock batches, and a batched tick wake is a normal turn.
+
 ## Starter plugins
 
 | Plugin | Injects | Provides | Role |
@@ -52,7 +67,7 @@ Models call tools natively over OpenAI-compatible interfaces:
 | `agent` | `chat-history`, `model-registry`, `llm-context` | `agent-loop` | the turn loop: one `chat.message` per turn, jobs as tools, its own context |
 | `repl-chat` | `agent-loop` | `repl` | the terminal: prompt, commands, renders `chat.message` wakes |
 
-Host-side components: `tool-manager` (registry and jobs), `notifications` (the queued bus), and `subagent` (the manager tool that calls an agent).
+Host-side components: `tool-manager` (registry and jobs, declaring the `jobs`, `peep`, and `kill` tools above), `notifications` (the queued bus), and `subagent` (the manager tool that calls an agent).
 
 ## Run
 
