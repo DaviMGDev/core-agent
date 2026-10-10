@@ -129,6 +129,36 @@ func TestTicksCarryElapsedAndCompletedCarriesResult(t *testing.T) {
 	}
 }
 
+// TestTickDoesNotAlterJobState verifies that tick intervals emit clock nudges
+// without altering job status, failing, or killing the running job.
+func TestTickDoesNotAlterJobState(t *testing.T) {
+	rec := &recorder{}
+	m := New(Options{Publisher: rec})
+	release := make(chan struct{})
+	if err := m.Registry().Declare(Tool{Name: "slow", Run: blocking(release)}); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+
+	job := m.Start("slow", nil, 10*time.Millisecond)
+	// Wait for at least 2 ticks to fire.
+	waitFor(t, "at least 2 ticks", func() bool { return rec.count(notifications.TopicJobTick) >= 2 })
+
+	// State must still be running; no error, no kill.
+	peep := m.Peep(job)
+	if peep.State != StateRunning {
+		t.Fatalf("job state after ticks = %s, want %s", peep.State, StateRunning)
+	}
+	if peep.Error != "" {
+		t.Fatalf("job error after ticks = %q, want empty", peep.Error)
+	}
+
+	close(release)
+	st := job.Wait()
+	if st.State != StateDone {
+		t.Fatalf("final job state = %s, want done", st.State)
+	}
+}
+
 func TestCloseReclaimsWithoutKill(t *testing.T) {
 	rec := &recorder{}
 	m := New(Options{Publisher: rec})

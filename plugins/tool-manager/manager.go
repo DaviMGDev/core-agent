@@ -136,7 +136,7 @@ func (m *Manager) start(tool string, args json.RawMessage, tick time.Duration, c
 		return job
 	}
 
-	m.emitJob(job, notifications.TopicJobStarted, map[string]any{"job": job.id, "tool": job.tool})
+	m.emitJob(job, notifications.TopicJobStarted, map[string]any{"job": job.id, "tool": job.tool, "args": job.args})
 	job.setRunning()
 	m.wg.Add(1)
 	go m.run(job, t)
@@ -151,7 +151,7 @@ func (m *Manager) refuse(job *Job, reason string) {
 	job.err = reason
 	job.mu.Unlock()
 	close(job.done)
-	m.emitJob(job, notifications.TopicJobStarted, map[string]any{"job": job.id, "tool": job.tool})
+	m.emitJob(job, notifications.TopicJobStarted, map[string]any{"job": job.id, "tool": job.tool, "args": job.args})
 	m.emitJob(job, notifications.TopicJobFailed, map[string]any{"job": job.id, "error": reason})
 }
 

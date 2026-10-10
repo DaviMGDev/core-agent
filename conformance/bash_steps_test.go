@@ -38,8 +38,9 @@ func registerBashSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the bash job is killed$`, stepBashJobKilled)
 	sc.Step(`^the bash job is killed at once$`, stepBashJobKilledAtOnce)
 	sc.Step(`^the spawned descendant is gone$`, stepBashDescendantGone)
-	sc.Step(`^bash runs a command that hangs with timeout_ms (\d+)$`, stepBashRunsTimeout)
-	sc.Step(`^the bash job reaches failed with a timeout error$`, stepBashTimeoutFailed)
+	sc.Step(`^bash runs a command that hangs with remind_ms (\d+)$`, stepBashRunsRemind)
+	sc.Step(`^the reminder fires while the bash job stays running$`, stepBashReminderFiresWhileRunning)
+	sc.Step(`^the command's process is still running$`, stepBashProcessStillRunning)
 	sc.Step(`^the command's process is gone$`, stepBashProcessGone)
 }
 
@@ -48,7 +49,13 @@ func registerBashSteps(sc *godog.ScenarioContext) {
 func declareBash(ctx context.Context, look func(string) (string, error)) error {
 	w := worldFrom(ctx)
 	m := toolmanager.New(toolmanager.Options{})
-	if err := m.Registry().Declare(bash.Tool(bash.Options{LookPath: look})); err != nil {
+	opts := bash.Options{
+		LookPath: look,
+		OnRemind: func(jobID string, elapsed time.Duration) {
+			w.bashReminded = true
+		},
+	}
+	if err := m.Registry().Declare(bash.Tool(opts)); err != nil {
 		return err
 	}
 	if w.bashManager != nil {
@@ -239,7 +246,7 @@ func stepBashDescendantGone(ctx context.Context) error {
 	return pollGone(w.bashChildPID)
 }
 
-func stepBashRunsTimeout(ctx context.Context, ms int) error {
+func stepBashRunsRemind(ctx context.Context, ms int) error {
 	w := worldFrom(ctx)
 	dir, err := os.MkdirTemp("", "bash-conf-")
 	if err != nil {
@@ -248,8 +255,8 @@ func stepBashRunsTimeout(ctx context.Context, ms int) error {
 	w.bashDir = dir
 	pidFile := filepath.Join(dir, "shell.pid")
 	if err := startBashCall(ctx, bash.Call{
-		Command:   fmt.Sprintf("echo $$ > %q; sleep 300", pidFile),
-		TimeoutMS: int64(ms),
+		Command:  fmt.Sprintf("echo $$ > %q; sleep 300", pidFile),
+		RemindMS: int64(ms),
 	}); err != nil {
 		return err
 	}
@@ -261,16 +268,30 @@ func stepBashRunsTimeout(ctx context.Context, ms int) error {
 	return nil
 }
 
-func stepBashTimeoutFailed(ctx context.Context) error {
+func stepBashReminderFiresWhileRunning(ctx context.Context) error {
 	w := worldFrom(ctx)
-	st := w.bashJob.Wait()
-	if st.State != toolmanager.StateFailed {
-		return fmt.Errorf("bash job state = %s (error %q), want failed", st.State, st.Error)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if w.bashReminded {
+			break
+		}
+		if time.Now().After(deadline) {
+			return errors.New("reminder never fired")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if !strings.Contains(st.Error, "timeout") {
-		return fmt.Errorf("bash error = %q, want a timeout fact", st.Error)
+	st := w.bashJob.Peep()
+	if st.State != toolmanager.StateRunning {
+		return fmt.Errorf("bash job state = %s, want running", st.State)
 	}
-	w.bashError = st.Error
+	return nil
+}
+
+func stepBashProcessStillRunning(ctx context.Context) error {
+	w := worldFrom(ctx)
+	if err := syscall.Kill(w.bashShellPID, 0); err != nil {
+		return fmt.Errorf("pid %d is not running: %w", w.bashShellPID, err)
+	}
 	return nil
 }
 

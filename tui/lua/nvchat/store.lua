@@ -67,6 +67,27 @@ local function notify_error(reason)
   end
 end
 
+local function clean_job_detail(detail)
+  if not detail or detail == "" then
+    return ""
+  end
+  if detail:sub(1, 1) == "{" or detail:sub(1, 1) == '"' then
+    local ok, parsed = pcall(vim.json.decode, detail)
+    if ok then
+      if type(parsed) == "table" then
+        for _, k in ipairs({ "reply", "output", "stdout", "result" }) do
+          if parsed[k] and type(parsed[k]) == "string" and parsed[k] ~= "" then
+            return parsed[k]
+          end
+        end
+      elseif type(parsed) == "string" then
+        return parsed
+      end
+    end
+  end
+  return detail
+end
+
 -- handle_line serves one link message.
 local function handle_line(line)
   if line == "" then
@@ -82,6 +103,19 @@ local function handle_line(line)
     -- default the screen never used) still reaches the transcript.
     local chat = by_id[msg.chat] or last
     if chat then
+      -- Deduplication check: if previous message is a completed job entry with detail that
+      -- is repeated in msg.text, collapse the completed job entry.
+      local prev = #chat.messages > 0 and chat.messages[#chat.messages] or nil
+      if prev and prev.sender == "system" then
+        local job_prefix, job_detail = prev.body:match("^(job%s+[^:]+:%s*completed.-)%s*—%s*(.*)$")
+        if job_prefix and job_detail and job_detail ~= "" then
+          local clean_prev = clean_job_detail(job_detail)
+          if msg.text:find(clean_prev, 1, true) or clean_prev:find(msg.text, 1, true) then
+            prev.body = job_prefix
+          end
+        end
+      end
+
       local message = { sender = "assistant", time = now(), body = msg.text }
       table.insert(chat.messages, message)
       last = chat
@@ -110,12 +144,22 @@ local function handle_line(line)
   elseif msg.kind == "job" then
     -- Job state changes join the transcript as system entries (tui.pseudo).
     if last then
+      local detail = clean_job_detail(msg.detail)
+      -- Check deduplication: if last message is from assistant and already spoke this detail
+      local last_msg = #last.messages > 0 and last.messages[#last.messages] or nil
+      local collapsed = false
+      if msg.event == "completed" and detail ~= "" and last_msg and last_msg.sender == "assistant" then
+        if last_msg.body:find(detail, 1, true) or detail:find(last_msg.body, 1, true) then
+          collapsed = true
+        end
+      end
+
       local body = "job " .. (msg.job or "?") .. ": " .. (msg.event or "?")
       if msg.tool and msg.tool ~= "" then
         body = body .. " " .. msg.tool
       end
-      if msg.detail and msg.detail ~= "" then
-        body = body .. " — " .. msg.detail
+      if detail ~= "" and not collapsed then
+        body = body .. " — " .. detail
       end
       append(last, "system", body)
       local h = pending[last.id]
@@ -344,5 +388,8 @@ function M.stop()
     job = nil
   end
 end
+
+-- _handle_line exposes line handling for headless tests.
+M._handle_line = handle_line
 
 return M

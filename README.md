@@ -45,7 +45,7 @@ The tools the composition declares:
 | Tool | Role |
 |---|---|
 | `subagent` | call an agent with a brief; the reply returns as the job's result |
-| `bash` | run a shell command as one job; the result carries the exit code, stdout, and stderr |
+| `bash` | run a shell command as one job; streams output to peep, supports `remind_ms` nudge, and returns exit code, stdout, and stderr |
 | `jobs` | list the jobs visible to the caller in creation order: id, tool, state, and age |
 | `peep` | observe one job: state, last tick, and output so far |
 | `kill` | accept a kill, honored at the job's next safe point; the result reports the state at acceptance |

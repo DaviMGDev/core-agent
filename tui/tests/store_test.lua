@@ -119,6 +119,36 @@ check(
   peek_error ~= nil and string.find(peek_error, "unknown job", 1, true) ~= nil
 )
 
+-- 4.1: Human-readable job transitions in transcript without raw escaped JSON.
+store._handle_line('{"kind":"job","event":"started","job":"job-10","tool":"bash","detail":"echo hello"}')
+local recent_chat = store.recent()
+local last_m = recent_chat.messages[#recent_chat.messages]
+check(
+  "job started transcript entry formats tool and brief",
+  last_m.sender == "system" and last_m.body == "job job-10: started bash — echo hello"
+)
+
+store._handle_line([=[{"kind":"job","event":"completed","job":"job-11","tool":"subagent","detail":"{\"reply\":\"clean text\"}"}]=])
+last_m = recent_chat.messages[#recent_chat.messages]
+check(
+  "job completed transcript entry unescapes reply JSON",
+  last_m.sender == "system" and last_m.body == "job job-11: completed subagent — clean text"
+)
+
+-- 4.2: Suppress duplicate job completion entries when assistant repeats the result.
+store._handle_line('{"kind":"job","event":"completed","job":"job-12","tool":"subagent","detail":"simulation finished successfully"}')
+local job12_entry = recent_chat.messages[#recent_chat.messages]
+check(
+  "job completed entry has full detail before assistant speaks",
+  job12_entry.body == "job job-12: completed subagent — simulation finished successfully"
+)
+-- Assistant speaks repeating the result:
+store._handle_line('{"kind":"message","chat":"' .. recent_chat.id .. '","text":"Result: simulation finished successfully"}')
+check(
+  "job completed entry collapses when assistant repeats result",
+  job12_entry.body == "job job-12: completed subagent"
+)
+
 -- 3.5: an unreachable core reports an error instead of serving anything.
 store.stop()
 package.loaded["nvchat.store"] = nil

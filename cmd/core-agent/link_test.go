@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/DaviMGDev/core-agent/internal/link"
+	"github.com/DaviMGDev/core-agent/plugins/notifications"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 )
 
@@ -612,5 +614,55 @@ func TestRunLinkAnswersMalformedLinesAndSurvives(t *testing.T) {
 	messages := pull[link.Message](lines)
 	if len(messages) != 1 || messages[0].Chat != "alpha" || !strings.Contains(messages[0].Text, "alive") {
 		t.Fatalf("the loop did not serve the next deliver:\n%s", out)
+	}
+}
+
+// TestDescribeResultUnwrapsAndTruncates proves describeResult unwraps reply fields
+// without raw JSON escapes and truncates long results with a marker.
+func TestDescribeResultUnwrapsAndTruncates(t *testing.T) {
+	// Unwraps reply field without JSON quotes/braces.
+	res := describeResult(json.RawMessage(`{"reply":"clean unescaped reply text"}`))
+	if res != "clean unescaped reply text" {
+		t.Errorf("describeResult = %q, want 'clean unescaped reply text'", res)
+	}
+
+	// Long output is truncated with marker.
+	longStr := strings.Repeat("abcdefghij ", 20) // 220 chars
+	payload, _ := json.Marshal(map[string]any{"reply": longStr})
+	truncated := describeResult(payload)
+	if !strings.Contains(truncated, "... [") || !strings.Contains(truncated, "chars truncated]") {
+		t.Errorf("truncated = %q, want truncation marker", truncated)
+	}
+	if len(truncated) >= len(longStr) {
+		t.Errorf("truncated length %d not smaller than original %d", len(truncated), len(longStr))
+	}
+}
+
+// TestJobStartedCarriesArgsBrief proves job.started events format a brief
+// of the tool arguments into the detail field.
+func TestJobStartedCarriesArgsBrief(t *testing.T) {
+	var buf bytes.Buffer
+	f := &linkFrontend{
+		out: &linkWriter{out: &buf},
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"job":  "job-1",
+		"tool": "bash",
+		"args": map[string]any{"command": "echo hello world"},
+	})
+	f.jobLine(notifications.TopicJobStarted, payload)
+
+	var job link.Job
+	if err := json.Unmarshal(buf.Bytes(), &job); err != nil {
+		t.Fatalf("unmarshal job: %v", err)
+	}
+	if job.Event != "started" {
+		t.Errorf("job.Event = %q, want started", job.Event)
+	}
+	if job.Tool != "bash" {
+		t.Errorf("job.Tool = %q, want bash", job.Tool)
+	}
+	if job.Detail != "echo hello world" {
+		t.Errorf("job.Detail = %q, want 'echo hello world'", job.Detail)
 	}
 }

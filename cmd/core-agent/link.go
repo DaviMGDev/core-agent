@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +51,7 @@ type agentAnswer struct {
 type jobEvent struct {
 	Job    string          `json:"job"`
 	Tool   string          `json:"tool,omitempty"`
+	Args   json.RawMessage `json:"args,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  string          `json:"error,omitempty"`
 }
@@ -349,6 +351,7 @@ func (f *linkFrontend) jobLine(topic string, payload []byte) {
 	case notifications.TopicJobStarted:
 		job.Event = "started"
 		job.Tool = ev.Tool
+		job.Detail = describeArgs(ev.Tool, ev.Args)
 	case notifications.TopicJobCompleted:
 		job.Event = "completed"
 		job.Detail = describeResult(ev.Result)
@@ -363,15 +366,87 @@ func (f *linkFrontend) jobLine(topic string, payload []byte) {
 	f.out.line(job)
 }
 
-// describeResult renders a job result: a string result as itself, any other
-// JSON as its compact document.
+// describeArgs formats a concise brief from a tool call's arguments.
+func describeArgs(tool string, raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		for _, key := range []string{"brief", "command", "query", "path", "url", "text"} {
+			if v, ok := obj[key]; ok {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return truncateSummary(strings.TrimSpace(s), 80)
+				}
+			}
+		}
+		compact, err := json.Marshal(obj)
+		if err == nil && len(compact) > 2 {
+			return truncateSummary(string(compact), 80)
+		}
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil && strings.TrimSpace(s) != "" {
+		return truncateSummary(strings.TrimSpace(s), 80)
+	}
+	return ""
+}
+
+func truncateSummary(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if max > 0 && len(s) > max {
+		return s[:max-3] + "..."
+	}
+	return s
+}
+
+// maxResultDisplay is the maximum length of a job result before truncation in the transcript.
+const maxResultDisplay = 120
+
+// describeResult renders a job result as a readable summary: extracted text
+// when the result is an object with reply/output/stdout, without escaped JSON,
+// and truncated with a marker when long. Raw output stays with peep.
 func describeResult(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
+		return truncateResult(s, maxResultDisplay)
 	}
-	return string(raw)
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		for _, key := range []string{"reply", "output", "stdout", "result"} {
+			if v, ok := obj[key]; ok {
+				if str, ok := v.(string); ok && strings.TrimSpace(str) != "" {
+					return truncateResult(strings.TrimSpace(str), maxResultDisplay)
+				}
+			}
+		}
+		if code, ok := obj["exit_code"]; ok {
+			out, _ := obj["stdout"].(string)
+			errOut, _ := obj["stderr"].(string)
+			summary := strings.TrimSpace(out)
+			if summary == "" {
+				summary = strings.TrimSpace(errOut)
+			}
+			if summary != "" {
+				return truncateResult(summary, maxResultDisplay)
+			}
+			return fmt.Sprintf("exit code %v", code)
+		}
+		compact, err := json.Marshal(obj)
+		if err == nil {
+			return truncateResult(string(compact), maxResultDisplay)
+		}
+	}
+	return truncateResult(string(raw), maxResultDisplay)
+}
+
+func truncateResult(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if max > 0 && len(s) > max {
+		return fmt.Sprintf("%s... [%d chars truncated]", s[:max], len(s)-max)
+	}
+	return s
 }

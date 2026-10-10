@@ -1,7 +1,7 @@
 Feature: bash — a default shell tool
 
   One call is one job: the command streams while it runs, the result is
-  factual, kill reaches the process tree, and the timeout bounds the call.
+  factual, kill reaches the process tree, and a reminder bound nudges the call.
 
   Rule: One call is one job
 
@@ -31,11 +31,13 @@ Feature: bash — a default shell tool
       Then the bash job is killed at once
       And the spawned descendant is gone
 
-    Scenario: An expired timeout fails the job and terminates the process
+    Scenario: An expired reminder bound keeps the process running until killed
       Given a bash tool on a manager
-      When bash runs a command that hangs with timeout_ms 200
-      Then the bash job reaches failed with a timeout error
-      And the command's process is gone
+      When bash runs a command that hangs with remind_ms 50
+      Then the reminder fires while the bash job stays running
+      And the command's process is still running
+      When the bash job is killed
+      Then the command's process is gone
 
   Rule: The shell is selected at the call
 

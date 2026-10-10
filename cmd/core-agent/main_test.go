@@ -574,8 +574,8 @@ func TestCompositionDeclaresBashTool(t *testing.T) {
 		if tool.Name != bash.ToolName {
 			continue
 		}
-		if !strings.Contains(string(tool.Parameters), "timeout_ms") {
-			t.Fatalf("agent payload bash schema = %s, want timeout_ms", tool.Parameters)
+		if !strings.Contains(string(tool.Parameters), "remind_ms") {
+			t.Fatalf("agent payload bash schema = %s, want remind_ms", tool.Parameters)
 		}
 		return
 	}

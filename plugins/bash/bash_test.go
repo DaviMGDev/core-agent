@@ -73,7 +73,7 @@ func TestToolDeclaration(t *testing.T) {
 	if schema.Type != "object" {
 		t.Errorf("schema type = %q, want object", schema.Type)
 	}
-	wantTypes := map[string]string{"command": "string", "cwd": "string", "timeout_ms": "integer"}
+	wantTypes := map[string]string{"command": "string", "cwd": "string", "remind_ms": "integer"}
 	for name, wantType := range wantTypes {
 		prop, ok := schema.Properties[name]
 		if !ok {
@@ -83,6 +83,9 @@ func TestToolDeclaration(t *testing.T) {
 		if prop.Type != wantType {
 			t.Errorf("schema property %q type = %q, want %q", name, prop.Type, wantType)
 		}
+	}
+	if _, hasTimeout := schema.Properties["timeout_ms"]; hasTimeout {
+		t.Errorf("schema still defines timeout_ms: %s", tool.Schema)
 	}
 	if len(schema.Required) != 1 || schema.Required[0] != "command" {
 		t.Errorf("required = %v, want [command]", schema.Required)
@@ -344,40 +347,77 @@ func TestKilledCallLandsKilled(t *testing.T) {
 	}
 }
 
-// TestCallTimeoutDefault proves timeout_ms defaults to 60 seconds.
-func TestCallTimeoutDefault(t *testing.T) {
-	if DefaultTimeout != 60*time.Second {
-		t.Fatalf("DefaultTimeout = %s, want 60s", DefaultTimeout)
+// TestCallRemindUnmarshal proves Call unmarshals remind_ms correctly.
+func TestCallRemindUnmarshal(t *testing.T) {
+	var c Call
+	if err := json.Unmarshal([]byte(`{"command":"echo hi","remind_ms":5000}`), &c); err != nil {
+		t.Fatalf("unmarshal Call: %v", err)
 	}
-	if got := callTimeout(Call{}, Options{}); got != DefaultTimeout {
-		t.Fatalf("call timeout = %s, want %s", got, DefaultTimeout)
-	}
-	if got := callTimeout(Call{TimeoutMS: 1500}, Options{}); got != 1500*time.Millisecond {
-		t.Fatalf("call timeout = %s, want 1.5s", got)
-	}
-	if got := callTimeout(Call{}, Options{Timeout: 5 * time.Second}); got != 5*time.Second {
-		t.Fatalf("configured timeout = %s, want 5s", got)
+	if c.RemindMS != 5000 {
+		t.Fatalf("c.RemindMS = %d, want 5000", c.RemindMS)
 	}
 }
 
-// TestCallTimeoutExpiry proves an expired timeout fails the job factually and
-// terminates the process.
-func TestCallTimeoutExpiry(t *testing.T) {
+// TestCallRemindDefault proves remind_ms defaults to 60 seconds.
+func TestCallRemindDefault(t *testing.T) {
+	if DefaultRemind != 60*time.Second {
+		t.Fatalf("DefaultRemind = %s, want 60s", DefaultRemind)
+	}
+	if got := callRemind(Call{}, Options{}); got != DefaultRemind {
+		t.Fatalf("call remind = %s, want %s", got, DefaultRemind)
+	}
+	if got := callRemind(Call{RemindMS: 1500}, Options{}); got != 1500*time.Millisecond {
+		t.Fatalf("call remind = %s, want 1.5s", got)
+	}
+	if got := callRemind(Call{}, Options{Remind: 5 * time.Second}); got != 5*time.Second {
+		t.Fatalf("configured remind = %s, want 5s", got)
+	}
+}
+
+// TestReminderFiresWithoutKilling proves an expired reminder bound fires the reminder
+// without terminating the process or failing the job.
+func TestReminderFiresWithoutKilling(t *testing.T) {
 	dir := t.TempDir()
 	shellPID := filepath.Join(dir, "shell.pid")
-	m := newManager(t, Options{})
-	args, err := json.Marshal(Call{TimeoutMS: 200, Command: fmt.Sprintf("echo $$ > %q; sleep 300", shellPID)})
+	remindFired := make(chan string, 1)
+	m := newManager(t, Options{
+		OnRemind: func(jobID string, elapsed time.Duration) {
+			select {
+			case remindFired <- jobID:
+			default:
+			}
+		},
+	})
+	args, err := json.Marshal(Call{RemindMS: 50, Command: fmt.Sprintf("echo $$ > %q; sleep 300", shellPID)})
 	if err != nil {
 		t.Fatalf("marshal call: %v", err)
 	}
 	job := m.Start(ToolName, args, 0)
 	shell := waitPidFile(t, shellPID)
-	st := job.Wait()
-	if st.State != toolmanager.StateFailed {
-		t.Fatalf("job state = %s (error %q), want failed", st.State, st.Error)
+
+	select {
+	case gotID := <-remindFired:
+		if gotID != job.ID() {
+			t.Fatalf("reminded job ID = %q, want %q", gotID, job.ID())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reminder notification")
 	}
-	if want := "bash: timeout after 200ms"; st.Error != want {
-		t.Fatalf("error = %q, want %q", st.Error, want)
+
+	// Verify the process is still running and the job is still running.
+	if err := syscall.Kill(shell, 0); err != nil {
+		t.Fatalf("process %d is not running after reminder: %v", shell, err)
+	}
+	st := job.Peep()
+	if st.State != toolmanager.StateRunning {
+		t.Fatalf("job state after reminder = %s, want running", st.State)
+	}
+
+	// Now explicitly kill the job and verify it terminates cleanly.
+	m.Kill(job)
+	final := job.Wait()
+	if final.State != toolmanager.StateKilled {
+		t.Fatalf("job state after kill = %s, want killed", final.State)
 	}
 	waitGone(t, shell)
 }

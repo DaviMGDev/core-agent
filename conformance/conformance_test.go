@@ -178,6 +178,7 @@ type world struct {
 	bashFIFO       string
 	bashShellPID   int
 	bashChildPID   int
+	bashReminded   bool
 
 	// shared
 	err error

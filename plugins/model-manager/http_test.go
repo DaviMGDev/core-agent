@@ -9,7 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/DaviMGDev/core-agent/internal/keys"
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
 	mcontext "github.com/DaviMGDev/memento/context"
 	"github.com/DaviMGDev/memento/runtime"
@@ -130,4 +132,48 @@ func TestRespondFailsOnMissingCredential(t *testing.T) {
 		}
 	}
 	waitGone(t, sched, mmID, pmID)
+}
+
+type testProviderRegistry struct {
+	p keys.Provider
+}
+
+func (r testProviderRegistry) Register(p keys.Provider) error { return nil }
+func (r testProviderRegistry) Unregister(name string) error   { return nil }
+func (r testProviderRegistry) Get(name string) (keys.Provider, bool) {
+	return r.p, true
+}
+func (r testProviderRegistry) List() []keys.Provider { return []keys.Provider{r.p} }
+func (r testProviderRegistry) ProviderFor(model string) (keys.Provider, bool) {
+	return r.p, true
+}
+
+// TestProviderExchangeTransportTimeoutFailsFactually proves the HTTP client timeout
+// acts purely as a transport deadline, returning a factual provider failure.
+func TestProviderExchangeTransportTimeoutFailsFactually(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	reg := testProviderRegistry{
+		p: keys.Provider{
+			Name:     "slow",
+			Endpoint: srv.URL,
+			Models:   []string{"slow-model"},
+		},
+	}
+
+	c := caller{
+		providers: reg,
+		client:    &http.Client{Timeout: 10 * time.Millisecond},
+	}
+	_, err := c.Complete("slow-model", []ContextMessage{{Role: "user", Text: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("Complete succeeded, want timeout error")
+	}
+	if !strings.Contains(err.Error(), `request to provider "slow" failed`) {
+		t.Fatalf("Complete error = %q, want provider failed message", err.Error())
+	}
 }

@@ -1,7 +1,7 @@
 ---
 type: spec
 title: "bash — Component Specification"
-description: "A default shell tool: one call is one job, merged streaming to peep, a factual result, process-tree kill, and a 60s timeout bound."
+description: "A default shell tool: one call is one job, merged streaming to peep, a factual result, process-tree kill, and a 60s reminder bound."
 tags: [spec, plugin]
 sections: [context, semantics, call, conformance, non-goals, decisions]
 created: "2026-10-10"
@@ -43,9 +43,10 @@ capability the model can claim beyond what the tool returns.
 - A non-zero exit fails the job; the error text is the observed state plus
   the captured output, never an invented diagnosis. The captured output also
   stays observable through peep's output buffer.
-- An optional `timeout_ms` bounds the call; the default is 60 seconds. Expiry
-  terminates the process group and fails the job with the timeout it
-  observed.
+- An optional `remind_ms` sets the reminder bound for the call; the default is 60 seconds.
+  Expiry surfaces a reminder to the agent while process execution continues uninterrupted.
+  It does not terminate the process group, fail the job, or alter job state; only explicit
+  kill terminates the process group.
 - The tool is presented like any other callable: hiding and renaming apply,
   and the description binds the model to report only what the process
   produced.
@@ -58,7 +59,7 @@ The tool is `bash`; its arguments are a JSON document:
 |---|---|
 | `command` | the shell command to run (required) |
 | `cwd` | the working directory; the core's directory when unset |
-| `timeout_ms` | the time bound in milliseconds; 60000 when unset |
+| `remind_ms` | the reminder bound in milliseconds; 60000 when unset |
 
 The job's result on done is `{exit_code, stdout, stderr}`.
 
@@ -66,7 +67,7 @@ The job's result on done is `{exit_code, stdout, stderr}`.
 
 Colocated Go tests cover the declaration, shell selection, environment
 inheritance, streaming, the result document, the failure policy, process-tree
-kill, and the timeout bound. Scenarios:
+kill, and the reminder bound. Scenarios:
 [`features/bash.feature`](features/bash.feature), enrolled in the conformance
 suite.
 
@@ -94,6 +95,7 @@ group.
 - **B4 — Kill the process group.** The call sets `Setpgid`, and cancellation
   sends SIGKILL to the group, so the command's descendants die with the shell.
   `WaitDelay` bounds the wait for I/O to close after a kill.
-- **B5 — The timeout defaults to 60 seconds.** `timeout_ms` overrides it per
-  call (user decision); expiry is the call's own bound, not a job-engine
-  policy.
+- **B5 — The reminder defaults to 60 seconds.** `remind_ms` overrides it per
+  call (issue #23); expiry surfaces a reminder signal without killing the
+  process group or failing the job. The agent decides whether to kill or keep
+  running.
