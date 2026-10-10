@@ -17,6 +17,7 @@ import (
 
 	"github.com/DaviMGDev/core-agent/internal/config"
 	"github.com/DaviMGDev/core-agent/plugins/agent"
+	"github.com/DaviMGDev/core-agent/plugins/bash"
 	"github.com/DaviMGDev/core-agent/plugins/subagent"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 )
@@ -536,6 +537,49 @@ func TestAgentPayloadListsJobTools(t *testing.T) {
 			t.Errorf("agent payload missing tool %q: %+v", want, cfg.Tools)
 		}
 	}
+}
+
+// TestCompositionDeclaresBashTool proves the default composition declares the
+// bash tool and the top-level agent payload presents it with its schema.
+func TestCompositionDeclaresBashTool(t *testing.T) {
+	sessCfg := sessionFrom(t, testResolved(t), "tester")
+	var manager *toolmanager.Manager
+	sessCfg.onComposed = func(m *toolmanager.Manager) { manager = m }
+	sess, err := composeSession(context.Background(), sessCfg, io.Discard)
+	if err != nil {
+		t.Fatalf("composeSession: %v", err)
+	}
+	defer sess.Close()
+
+	if manager == nil {
+		t.Fatal("composition never reported the manager")
+	}
+	tool, ok := manager.Registry().Lookup(bash.ToolName)
+	if !ok {
+		t.Fatalf("registry does not hold %q", bash.ToolName)
+	}
+	if !strings.Contains(string(tool.Schema), "command") {
+		t.Fatalf("bash schema = %s, want the command parameter", tool.Schema)
+	}
+
+	raw, err := agentPayload(`{"conversation":"main","model":"fast"}`, manager.Registry())
+	if err != nil {
+		t.Fatalf("agentPayload: %v", err)
+	}
+	var cfg agent.Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("Unmarshal agent payload: %v", err)
+	}
+	for _, tool := range cfg.Tools {
+		if tool.Name != bash.ToolName {
+			continue
+		}
+		if !strings.Contains(string(tool.Parameters), "timeout_ms") {
+			t.Fatalf("agent payload bash schema = %s, want timeout_ms", tool.Parameters)
+		}
+		return
+	}
+	t.Fatalf("agent payload missing %q: %+v", bash.ToolName, cfg.Tools)
 }
 
 // TestComposedAgentConfigListsSubagentTool proves the entry injects the
