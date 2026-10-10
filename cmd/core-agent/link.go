@@ -39,8 +39,8 @@ var linkWakeTopics = []string{
 // clamps to the length, so a bound above any real conversation means all.
 const linkAllTurns = 1 << 20
 
-// agentAnswer is the agent guest's handler answer: the message the turn
-// spoke, and the job it started.
+// agentAnswer is the agent's handler answer: the message the turn spoke,
+// and the job it started.
 type agentAnswer struct {
 	Text string `json:"text,omitempty"`
 	Job  string `json:"job,omitempty"`
@@ -90,8 +90,8 @@ type linkFrontend struct {
 	jobs  map[string]string // job id -> the chat whose turn started it
 }
 
-// runLink serves the TUI link on in/out over a composed session; guest logs
-// go to logs, because stdout carries link lines only.
+// runLink serves the TUI link on in/out over a composed session; component
+// logs go to logs, because stdout carries link lines only.
 func runLink(ctx context.Context, in io.Reader, out io.Writer, logs io.Writer, cfg sessionConfig) error {
 	s, err := composeSession(ctx, cfg, logs)
 	if err != nil {

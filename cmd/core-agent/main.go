@@ -1,7 +1,7 @@
 // Command core-agent drives the composed system.
 //
-// It registers the seven starter plugin guests with memento, composes one
-// fiber per plugin through the scheduler, and serves one of two surfaces: the
+// It composes the seven native starter plugins with memento, one fiber
+// per plugin through the scheduler, and serves one of two surfaces: the
 // REPL (stdin/stdout, host-driven, woken for chat.message) or the TUI link
 // (JSON lines on stdin/stdout, system spec "TUI Link"). It unloads on exit.
 // The entry drives the scheduler directly instead of the loader because the
@@ -32,13 +32,12 @@ import (
 	"github.com/DaviMGDev/core-agent/plugins/subagent"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 	mcontext "github.com/DaviMGDev/memento/context"
-	"github.com/DaviMGDev/memento/plugins/wasm"
 	"github.com/DaviMGDev/memento/runtime"
 )
 
 // sessionConfig is one composed session's configuration: the nickname, the
 // payloads handed to the starter plugins, and the host credential resolver the
-// HTTP transport substitutes through. Tests override the provider document to
+// model-manager exchange substitutes through. Tests override the provider document to
 // point at a local server, which is what turns the deterministic stub into a
 // real provider call. onComposed, when set, receives the tool manager once
 // the plugins are active: the entry's tests drive the host side (peep,
@@ -105,56 +104,31 @@ func loadSession(mock bool, nick string) (sessionConfig, error) {
 	}, nil
 }
 
-// busServices adapts the notification bus to the loader's host-services
-// contract: guest job imports reach the manager and guest publishes reach the
-// bus like any other publisher.
-type busServices struct {
-	bus     *notifications.Bus
-	manager *toolmanager.Manager
-}
-
-func (s busServices) StartJob(caller *runtime.Instance, req []byte) ([]byte, error) {
-	return s.manager.StartJob(caller, req)
-}
-
-func (s busServices) PeepJob(caller *runtime.Instance, req []byte) ([]byte, error) {
-	return s.manager.PeepJob(caller, req)
-}
-
-func (s busServices) KillJob(caller *runtime.Instance, req []byte) ([]byte, error) {
-	return s.manager.KillJob(caller, req)
-}
-
-func (s busServices) Publish(topic string, payload []byte) error {
-	s.bus.Publish(topic, payload)
-	return nil
-}
-
-func (s busServices) Cancelled(caller *runtime.Instance) bool {
-	return s.manager.Cancelled(caller)
-}
-
-// plugin describes one starter plugin instance.
+// plugin describes one starter plugin instance: its reference name, its
+// native component, and its activation payload.
 type plugin struct {
 	ref     string
-	wasm    []byte
+	comp    runtime.Component
 	payload any
 }
 
-// starterPlugins returns the seven plugins in dependency order, REPL last.
-// provider-openai sits right after provider-manager: it injects the live
-// registry and registers its provider at activation. Its payload is empty,
-// so it registers the standard OpenAI provider; a same-named config entry
-// is left untouched by design.
-func starterPlugins(cfg sessionConfig) []plugin {
+// starterPlugins returns the seven native plugins in dependency order, REPL
+// last. provider-openai sits right after provider-manager: it injects the
+// live registry and registers its provider at activation. Its payload is
+// empty, so it registers the standard OpenAI provider; a same-named config
+// entry is left untouched by design. The agent entry carries the raw agent
+// payload here; the caller swaps in the tool-augmented document at insert.
+func starterPlugins(logs io.Writer, resolve func(name string) (string, bool), manager *toolmanager.Manager, publish func(text string) error, cfg sessionConfig) []plugin {
+	mmComp := modelmanager.NewComponent(logs)
+	mmComp.ResolveCredential = resolve
 	return []plugin{
-		{"provider-manager", providermanager.Wasm, cfg.providers},
-		{"provider-openai", provideropenai.Wasm, ""},
-		{"model-manager", modelmanager.Wasm, cfg.models},
-		{"chat-history", chathistory.Wasm, cfg.history},
-		{"context-manager", contextmanager.Wasm, cfg.context},
-		{"agent", agent.Wasm, cfg.agent},
-		{"repl-chat", replchat.Wasm, cfg.nick},
+		{"provider-manager", providermanager.NewComponent(logs), cfg.providers},
+		{"provider-openai", provideropenai.NewComponent(logs), ""},
+		{"model-manager", mmComp, cfg.models},
+		{"chat-history", chathistory.NewComponent(logs), cfg.history},
+		{"context-manager", contextmanager.NewComponent(logs), cfg.context},
+		{"agent", agent.NewComponent(logs, manager, publish), cfg.agent},
+		{"repl-chat", replchat.NewComponent(logs), cfg.nick},
 	}
 }
 
@@ -171,7 +145,7 @@ func main() {
 	}
 	ctx := context.Background()
 	if *tui {
-		// Guest logs go to stderr: stdout carries link lines only.
+		// Component logs go to stderr: stdout carries link lines only.
 		err = runLink(ctx, os.Stdin, os.Stdout, os.Stderr, cfg)
 	} else {
 		err = runConfig(ctx, os.Stdin, os.Stdout, cfg)
@@ -190,12 +164,11 @@ type composedSession struct {
 	bus         *notifications.Bus
 	manager     *toolmanager.Manager
 	gate        *sync.Mutex
-	engine      *wasm.Engine
 	sched       *runtime.Scheduler
 	fibers      []mcontext.FiberID
-	agent       *wasm.WASMComponent
-	history     *wasm.WASMComponent
-	terminal    *wasm.WASMComponent
+	agent       *agent.Component
+	history     *chathistory.Component
+	terminal    *replchat.Component
 	agentConfig agent.Config
 }
 
@@ -215,16 +188,15 @@ func (s *composedSession) Close() error {
 		unloadErr = waitGone(s.sched, s.fibers)
 	}
 	s.sched.Close()
-	_ = s.engine.Close(s.ctx)
 	return unloadErr
 }
 
-// composeSession composes the seven plugins from cfg and wires the agent
-// layer: the tool manager as the host job service, the subagent tool over the
-// agent guest, and the shared call gate. Guest logs go to logs. Egress is
-// open; credential references in request headers are resolved through the
-// session's credential resolver (the auth store or the host environment), so
-// a guest holds a reference and never a secret.
+// composeSession composes the seven native plugins from cfg and wires the
+// agent layer: the tool manager as the host job service, the subagent tool
+// over the agent loop, and the shared call gate. Component logs go to logs.
+// Egress is open; credential references are resolved through the session's
+// credential resolver (the auth store or the host environment) by the
+// model-manager exchange, so a reference crosses and never a secret.
 func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*composedSession, error) {
 	resolve := cfg.credentials
 	if resolve == nil {
@@ -236,40 +208,36 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 	// The gate spans attribution to release for every agent call, so a job
 	// scoped to one turn cannot answer for the next.
 	callGate := &sync.Mutex{}
-	engine, err := wasm.NewEngine(ctx,
-		wasm.WithHTTPCredentialResolver(resolve),
-		wasm.WithHostServices(busServices{bus: bus, manager: manager}),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("core-agent: engine: %w", err)
+	// The agent publishes its turns as chat.message events, like the guest
+	// did through the publish import; private subagent turns skip it.
+	publish := func(text string) error {
+		payload, err := json.Marshal(map[string]string{"text": text})
+		if err != nil {
+			return err
+		}
+		bus.Publish(notifications.TopicChatMessage, payload)
+		return nil
 	}
 	sched := runtime.New()
 	abort := func(err error) (*composedSession, error) {
 		sched.Close()
-		_ = engine.Close(ctx)
 		return nil, err
 	}
 
-	keys := wasm.NewKeyRegistry()
-	plugins := starterPlugins(cfg)
-	byRef := make(map[string]*wasm.WASMComponent, len(plugins))
+	plugins := starterPlugins(logs, resolve, manager, publish, cfg)
+	byRef := make(map[string]runtime.Component, len(plugins))
 	for _, p := range plugins {
-		comp, err := wasm.NewComponent(ctx, engine, p.wasm,
-			wasm.WithKeyRegistry(keys),
-			wasm.WithLogWriter(logs),
-			wasm.WithModuleName(p.ref),
-		)
-		if err != nil {
-			return abort(fmt.Errorf("core-agent: %s: %w", p.ref, err))
-		}
-		byRef[p.ref] = comp
+		byRef[p.ref] = p.comp
 	}
 
 	// The agent is the loop every caller reaches: the terminal invokes it, and
 	// the host waker wakes it for its root jobs' events. The manager lists the
 	// subagent tool over it, so a delegation is a job whose runner drives the
 	// child's turns.
-	agentComp := byRef["agent"]
+	agentComp, ok := byRef["agent"].(*agent.Component)
+	if !ok {
+		return abort(errors.New("core-agent: agent plugin is not the native loop"))
+	}
 	if err := manager.Registry().Declare(subagent.Tool(agentComp, manager, subagent.Options{Call: callGate})); err != nil {
 		return abort(fmt.Errorf("core-agent: subagent tool: %w", err))
 	}
@@ -288,21 +256,24 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 		return abort(err)
 	}
 
+	// Inserts are strictly sequenced with activation between them, in
+	// dependency order: an activating worker reads the scheduler's fiber
+	// table through runtime.Get, which races with the loop's own table
+	// writes while it still has inserts to process.
 	fibers := make([]mcontext.FiberID, 0, len(plugins))
 	for _, p := range plugins {
 		payload := p.payload
 		if p.ref == "agent" {
 			payload = agentPayloadDoc
 		}
-		id, err := sched.Insert(byRef[p.ref], payload)
+		id, err := sched.Insert(p.comp, payload)
 		if err != nil {
 			return abort(fmt.Errorf("core-agent: %s: %w", p.ref, err))
 		}
 		fibers = append(fibers, id)
-	}
-
-	if err := waitActive(sched, fibers); err != nil {
-		return abort(err)
+		if err := waitActive(sched, fibers); err != nil {
+			return abort(err)
+		}
 	}
 	var agentCfg agent.Config
 	if err := json.Unmarshal([]byte(agentPayloadDoc), &agentCfg); err != nil {
@@ -311,23 +282,30 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 	if cfg.onComposed != nil {
 		cfg.onComposed(manager)
 	}
+	historyComp, ok := byRef["chat-history"].(*chathistory.Component)
+	if !ok {
+		return abort(errors.New("core-agent: chat-history plugin is not the native record"))
+	}
+	terminalComp, ok := byRef["repl-chat"].(*replchat.Component)
+	if !ok {
+		return abort(errors.New("core-agent: repl-chat plugin is not the native terminal"))
+	}
 	return &composedSession{
 		ctx:         ctx,
 		bus:         bus,
 		manager:     manager,
 		gate:        callGate,
-		engine:      engine,
 		sched:       sched,
 		fibers:      fibers,
 		agent:       agentComp,
-		history:     byRef["chat-history"],
-		terminal:    byRef["repl-chat"],
+		history:     historyComp,
+		terminal:    terminalComp,
 		agentConfig: agentCfg,
 	}, nil
 }
 
 // runConfig drives one REPL session on in/out over a composed session, as
-// D15 describes: the host reads stdin, the terminal guest is woken for every
+// D15 describes: the host reads stdin, the terminal is woken for every
 // chat.message, and the tree unloads before returning.
 func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConfig) error {
 	if cfg.nick == "" {
@@ -339,9 +317,9 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	}
 	s.attachAgentWaker(out)
 
-	// The terminal guest is woken for every chat.message — a prompted reply
-	// and an unprompted message take the same path — while the host drives
-	// the session loop; the guest's module lock is free between wakes.
+	// The terminal is woken for every chat.message — a prompted reply and an
+	// unprompted message take the same path — while the host drives the
+	// session loop.
 	sub := s.bus.Subscribe(notifications.TopicChatMessage, terminalWaker{ctx: ctx, comp: s.terminal, log: out})
 	session := replchat.New(cfg.nick)
 	emit := func(text string) { _, _ = out.Write([]byte(text)) }
@@ -422,7 +400,7 @@ func (s *composedSession) attachAgentWaker(log io.Writer) {
 // events; the LLM decides whether to speak.
 type agentWaker struct {
 	ctx  context.Context
-	comp *wasm.WASMComponent
+	comp *agent.Component
 	log  io.Writer
 	gate sync.Locker
 }
@@ -449,8 +427,8 @@ func (w agentWaker) Wake(sub *notifications.Subscription) {
 	}
 }
 
-// invokeTerminal sends one wake to the terminal guest and reads its answer.
-func invokeTerminal(ctx context.Context, comp *wasm.WASMComponent, wake replchat.Wake) (replchat.Answer, error) {
+// invokeTerminal sends one wake to the terminal and reads its answer.
+func invokeTerminal(ctx context.Context, comp *replchat.Component, wake replchat.Wake) (replchat.Answer, error) {
 	req, err := json.Marshal(wake)
 	if err != nil {
 		return replchat.Answer{}, err
@@ -466,11 +444,11 @@ func invokeTerminal(ctx context.Context, comp *wasm.WASMComponent, wake replchat
 	return answer, nil
 }
 
-// terminalWaker wakes the terminal guest with one batch of chat.message
-// events: rendering is the guest's work, the host only routes the wake.
+// terminalWaker wakes the terminal with one batch of chat.message events:
+// rendering is the terminal's work, the host only routes the wake.
 type terminalWaker struct {
 	ctx  context.Context
-	comp *wasm.WASMComponent
+	comp *replchat.Component
 	log  io.Writer
 }
 
