@@ -90,6 +90,25 @@ check(
 check("reload kept the core", store.job_id() == core and core > 0)
 check("reload kept the chats", fresh.current ~= nil and #fresh.sessions == 1)
 
+-- The jobs overlay (system #15): mod+j opens a read-only view of the
+-- launch's jobs. This mock launch has none; the tree shaping and the peek
+-- refusal are covered by store_test.
+local jobs = require("nvchat.jobs")
+jobs.toggle()
+check(
+  "mod+j opens the jobs overlay",
+  fresh.wins.jobs ~= nil and vim.api.nvim_win_is_valid(fresh.wins.jobs)
+)
+vim.wait(5000, function()
+  local lines = vim.api.nvim_buf_get_lines(fresh.bufs.jobs, 0, -1, false)
+  return lines[1] == "no jobs in this launch"
+end, 20)
+local job_lines = vim.api.nvim_buf_get_lines(fresh.bufs.jobs, 0, -1, false)
+check("the empty launch renders an empty jobs tree", job_lines[1] == "no jobs in this launch")
+check("the jobs overlay is read-only", vim.bo[fresh.bufs.jobs].modifiable == false)
+jobs.close()
+check("closing the jobs overlay hides it", fresh.wins.jobs == nil)
+
 if failures > 0 then
   print(failures .. " check(s) failed")
   vim.cmd("cquit 3")

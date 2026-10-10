@@ -282,13 +282,16 @@ function M.reload()
   if state.wins.overlay and vim.api.nvim_win_is_valid(state.wins.overlay) then
     pcall(vim.api.nvim_win_close, state.wins.overlay, true)
   end
+  if state.wins.jobs and vim.api.nvim_win_is_valid(state.wins.jobs) then
+    pcall(vim.api.nvim_win_close, state.wins.jobs, true)
+  end
   if state.wins.composer and vim.api.nvim_win_is_valid(state.wins.composer) then
     pcall(vim.api.nvim_win_close, state.wins.composer, true)
   end
   if state.wins.messages and vim.api.nvim_win_is_valid(state.wins.messages) then
     vim.api.nvim_set_current_win(state.wins.messages)
   end
-  for _, name in ipairs({ "messages", "composer", "overlay" }) do
+  for _, name in ipairs({ "messages", "composer", "overlay", "jobs" }) do
     local buf = state.bufs[name]
     if buf and vim.api.nvim_buf_is_valid(buf) then
       pcall(vim.api.nvim_buf_delete, buf, { force = true })
@@ -301,6 +304,7 @@ function M.reload()
     "nvchat.messages",
     "nvchat.composer",
     "nvchat.sessions",
+    "nvchat.jobs",
   }) do
     package.loaded[name] = nil
   end
@@ -335,6 +339,7 @@ function M.start()
   state.bufs.messages = scratch_buffer("nvchat://messages")
   state.bufs.composer = composer_buffer()
   state.bufs.overlay = scratch_buffer("nvchat://sessions")
+  state.bufs.jobs = scratch_buffer("nvchat://jobs")
 
   -- A dead link freezes the screen (tui.pseudo): the store reports it here.
   store.on_error = M.freeze
@@ -359,6 +364,7 @@ function M.start()
   require("nvchat.messages").attach()
   require("nvchat.composer").attach()
   require("nvchat.sessions").attach()
+  require("nvchat.jobs").attach()
 
   -- Global keys (D15, D19-D21): mod = <Space>. mod+E files, mod+S sessions
   -- (the overlay arrives with its module), mod+H hides the chat, and
@@ -380,6 +386,9 @@ function M.start()
   })
   vim.keymap.set({ "n", "x" }, "<leader>s", require("nvchat.sessions").toggle, {
     desc = "nvchat: sessions overlay",
+  })
+  vim.keymap.set({ "n", "x" }, "<leader>j", require("nvchat.jobs").toggle, {
+    desc = "nvchat: jobs overlay",
   })
   vim.keymap.set({ "n", "i" }, "<C-b>", require("nvchat.files").toggle, {
     desc = "nvchat: toggle the files panel",

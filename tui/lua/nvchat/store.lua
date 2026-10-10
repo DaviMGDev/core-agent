@@ -1,7 +1,8 @@
 -- nvchat — the store.
 --
 -- The store abstraction is four operations: list the chats, open the recent
--- one, load a chat's turns, deliver a sent line. This module is the only Lua
+-- one, load a chat's turns, deliver a sent line — plus the read-only job
+-- queries (jobs, peek) the jobs overlay reads. This module is the only Lua
 -- code that knows the core exists: it spawns `core-agent -tui` per launch,
 -- speaks the JSON-lines link over stdio, and serves the four operations from
 -- launch-local memory. Chats are created lazily with ids minted here, named
@@ -17,6 +18,10 @@ M.error = nil
 -- on_error is called once when the link dies, so the screen can freeze.
 M.on_error = nil
 
+-- on_job is called for every job state transition the link streams, so the
+-- jobs overlay can refresh while it is open (ticks never cross the link).
+M.on_job = nil
+
 -- The chat list, in creation order; each chat is
 -- { id, name, messages = { {sender, time, body} }, loaded, loading }.
 local chats = {}
@@ -28,6 +33,10 @@ local job = nil
 local stopping = false
 local stdout_buf = "" -- partial line carried across callbacks
 local pending = {} -- chat id -> the last deliver's handlers
+local jobs = {} -- the last jobs answer, flat and in creation order
+local jobs_handler = nil -- the pending jobs request's handlers
+local peeks = {} -- job id -> the last peek answer
+local pending_peeks = {} -- the peek requests awaiting an answer, oldest first
 
 local function now()
   return os.date("%H:%M")
@@ -114,9 +123,31 @@ local function handle_line(line)
         h.on_reply(last, last.messages[#last.messages])
       end
     end
+    if M.on_job then
+      M.on_job(msg)
+    end
+  elseif msg.kind == "jobs" then
+    jobs = msg.jobs or {}
+    local h = jobs_handler
+    jobs_handler = nil
+    if h and h.on_jobs then
+      h.on_jobs(jobs)
+    end
+  elseif msg.kind == "peek" then
+    peeks[msg.job] = msg
+    local h = table.remove(pending_peeks, 1)
+    if h and h.on_peek then
+      h.on_peek(msg)
+    end
   elseif msg.kind == "error" then
-    -- A failed turn is refused, not fatal: the link stays up.
-    vim.notify("nvchat: " .. (msg.error or "the core refused a request"), vim.log.levels.WARN)
+    -- A failed turn is refused, not fatal: the link stays up. A pending
+    -- peek owns the refusal: the core answers unknowns with this shape.
+    local h = table.remove(pending_peeks, 1)
+    if h and h.on_error then
+      h.on_error(msg.error or "the core refused the peek")
+    else
+      vim.notify("nvchat: " .. (msg.error or "the core refused a request"), vim.log.levels.WARN)
+    end
   end
 end
 
@@ -252,6 +283,57 @@ end
 -- job_id() -> the spawned core's job id, 0 before the core starts.
 function M.job_id()
   return job or 0
+end
+
+-- jobs(handlers) -> asks the core for the launch's jobs. The answer arrives
+-- through handlers.on_jobs(rows), flat and in creation order; the last
+-- answer is kept for job_tree() and job_rows().
+function M.jobs(handlers)
+  jobs_handler = handlers or {}
+  send({ kind = "jobs" })
+end
+
+-- job_rows() -> the last jobs answer, flat and in creation order.
+function M.job_rows()
+  return jobs
+end
+
+-- job_tree(rows) -> the rows as a tree: a row whose parent is missing from
+-- the list stands as a root, and children nest under their parent in
+-- creation order. With no argument it shapes the last jobs answer.
+function M.job_tree(rows)
+  rows = rows or jobs
+  local by_job = {}
+  local nodes = {}
+  for _, row in ipairs(rows) do
+    local node = { row = row, children = {} }
+    nodes[#nodes + 1] = node
+    by_job[row.job] = node
+  end
+  local roots = {}
+  for _, node in ipairs(nodes) do
+    local parent = node.row.parent and node.row.parent ~= "" and by_job[node.row.parent]
+    if parent then
+      table.insert(parent.children, node)
+    else
+      table.insert(roots, node)
+    end
+  end
+  return roots
+end
+
+-- peek(job, handlers) -> asks the core for one job's status: state, last
+-- tick, and output so far. handlers.on_peek(status) receives the answer and
+-- handlers.on_error(reason) a factual refusal (an unknown job, say).
+function M.peek(job, handlers)
+  handlers = handlers or {}
+  table.insert(pending_peeks, handlers)
+  send({ kind = "peek", job = job })
+end
+
+-- peeked(job) -> the last peek answer for a job, or nil.
+function M.peeked(job)
+  return peeks[job]
 end
 
 -- stop() -> deliberately ends the link (tests; reloads).

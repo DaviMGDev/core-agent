@@ -75,6 +75,50 @@ check(
   a_turns[1].body == "hello store" and b_turns[1].body == "name b"
 )
 
+-- 3.6: the read-only job queries. The mock launch has no jobs, so the
+-- core answers an empty list; the tree builder is checked on scripted rows,
+-- and an unknown peek answers a factual error.
+local jobs_answer = nil
+store.jobs({
+  on_jobs = function(rows)
+    jobs_answer = rows
+  end,
+})
+vim.wait(5000, function()
+  return jobs_answer ~= nil
+end, 20)
+check("the core answers a jobs request", jobs_answer ~= nil and #jobs_answer == 0)
+
+local tree = store.job_tree({
+  { job = "job-1", tool = "subagent", state = "running" },
+  { job = "job-2", tool = "ok", state = "done", parent = "job-1" },
+  { job = "job-3", tool = "subagent", state = "running", parent = "job-1" },
+  { job = "job-4", tool = "ok", state = "done" },
+})
+check(
+  "the tree nests children under their parent",
+  #tree == 2
+    and tree[1].row.job == "job-1"
+    and #tree[1].children == 2
+    and tree[1].children[1].row.job == "job-2"
+    and tree[1].children[2].row.job == "job-3"
+    and tree[2].row.job == "job-4"
+)
+
+local peek_error = nil
+store.peek("job-99", {
+  on_error = function(reason)
+    peek_error = reason
+  end,
+})
+vim.wait(5000, function()
+  return peek_error ~= nil
+end, 20)
+check(
+  "an unknown peek answers a factual error",
+  peek_error ~= nil and string.find(peek_error, "unknown job", 1, true) ~= nil
+)
+
 -- 3.5: an unreachable core reports an error instead of serving anything.
 store.stop()
 package.loaded["nvchat.store"] = nil

@@ -3,10 +3,21 @@ type: log
 title: "specs/ log"
 description: "Activity log for the specs/ directory"
 created: "2026-10-08"
-updated: "2026-10-08"
+updated: "2026-10-09"
 ---
 
 # specs/ log
+
+## 2026-10-09
+
+- Added US-006 and D23 (D22 now carries a third wireframe): the read-only
+  jobs overlay — `mod+j` opens a floating tree of the launch's jobs with
+  the selected job's peek (state, last tick, output so far), refreshed by
+  state transitions, never starting, killing, or controlling a job, and
+  never painting ticks into the transcript. `jobs-overlay.feature` is
+  added; the surface, architecture, and stack sections note the `jobs`
+  module and the read-only `jobs`/`peek` store queries. Reason: user
+  direction — the writer sees what is running without leaving the chat.
 
 ## 2026-10-08
 

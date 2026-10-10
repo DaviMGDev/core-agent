@@ -5,7 +5,7 @@ description: "A chat workspace explored inside Neovim: files panel, editor, chat
 tags: [spec]
 sections: [context, users, user-stories, tui-surface, architecture, decisions, stack, nfr]
 created: "2026-10-08"
-updated: "2026-10-08"
+updated: "2026-10-09"
 ---
 
 # nvchat — Specification
@@ -69,6 +69,7 @@ The Gherkin suite under `features/` is the executable form of these stories:
 [startup.feature](features/startup.feature),
 [files-panel.feature](features/files-panel.feature),
 [sessions-overlay.feature](features/sessions-overlay.feature),
+[jobs-overlay.feature](features/jobs-overlay.feature),
 [message-list.feature](features/message-list.feature),
 [composer.feature](features/composer.feature),
 [navigation.feature](features/navigation.feature).
@@ -164,14 +165,37 @@ Acceptance criteria (EARS):
 - WHEN the writer hides the chat THE system SHALL give the editor the full
   main area.
 
+Story: US-006 — See the launch's jobs at a glance
+
+As the writer,
+I want the launch's jobs in an overlay I can summon,
+so that I can see what is running and peek at a job's output without
+leaving the chat.
+
+Acceptance criteria (EARS):
+
+- The system SHALL show the launch's jobs as a tree in a floating overlay.
+- WHEN the writer toggles the jobs overlay THE system SHALL show or hide it.
+- WHEN the writer selects a job THE system SHALL show its state, last tick,
+  and output so far.
+- WHEN a job changes state while the overlay is open THE system SHALL
+  refresh the tree.
+- The system SHALL NOT start, kill, or otherwise control a job from the
+  overlay.
+- The system SHALL NOT append ticks to the transcript.
+- WHILE the jobs overlay is hidden THE system SHALL keep its cursor over the
+  same job.
+
 ## TUI Surface
 
 One screen, `chat`. Its structure is declared in
 [chat.layout.txt](../chat.layout.txt) (LAYOUT v1); the visual wireframes are
 [chat.wireframe.svg](../chat.wireframe.svg) (launch: files panel + full-main
-chat) and [chat.wireframe.sessions.svg](../chat.wireframe.sessions.svg)
-(workspace: editor + chat column, sessions overlay open), each rendered to
-PNG and, as text, `.ascii.txt` next to it (D22).
+chat), [chat.wireframe.sessions.svg](../chat.wireframe.sessions.svg)
+(workspace: editor + chat column, sessions overlay open), and
+[chat.wireframe.jobs.svg](../chat.wireframe.jobs.svg) (workspace: jobs
+overlay open), each rendered to PNG and, as text, `.ascii.txt` next to it
+(D22).
 
 | Region | Type | Role |
 | --- | --- | --- |
@@ -181,6 +205,7 @@ PNG and, as text, `.ascii.txt` next to it (D22).
 | Message list | `message-list` | scrollable; block-level selection |
 | Composer | `composer` | a real buffer holding the draft |
 | Sessions overlay | `sessions:closed` | floating browser for the launch's chats |
+| Jobs overlay | `jobs:closed` | read-only floating view of the launch's jobs: the manager's tree with a peek preview |
 | Statusline | `statusline` | editor state (mode) and open session summary |
 
 Rendering targets the 160×50 grid at 1280×800 (8×16 px cells) and is checked
@@ -193,7 +218,8 @@ none.
 The model is a flat launch-local list of chats; each chat is one
 conversation with the core and holds ordered messages (tui.pseudo). The
 files panel is real neo-tree, a plugin window over the
-filesystem; the message list, composer, and sessions overlay are backed by
+filesystem; the message list, composer, jobs overlay, and sessions overlay
+are backed by
 nvchat buffers; the statusline is the editor's single global statusline,
 not a buffer. The main area holds normal editor windows and the chat
 column: the chat takes the full width while no editor window is open, and
@@ -201,13 +227,14 @@ becomes a right column while one is (D21).
 
 Behavior is specified in [chat.pseudo](../chat.pseudo): start, toggle the
 files panel, open a file, place and hide the chat, summon and choose from
-the sessions overlay, render messages, select a message, scroll the message
-list, send, and receive a reply. The recorded design decisions are in
-Decisions below.
+the sessions overlay, summon and read the read-only jobs overlay, render
+messages, select a message, scroll the message list, send, and receive a
+reply. The recorded design decisions are in Decisions below.
 
 The store is an abstraction — list the launch's chats, open the recent one,
-load a chat's turns, deliver a sent line. The core backs it over the TUI
-link; the UI calls the same four operations. Unsent drafts are not part of
+load a chat's turns, deliver a sent line, and answer the read-only job
+queries (`jobs`, `peek`). The core backs it over the TUI link; the UI calls
+the same operations. Unsent drafts are not part of
 the store: they are client-local state
 under the `nvchat` appname's state directory, saved at exit and on session
 switches, and restored when a session opens (D18).
@@ -318,12 +345,21 @@ switches, and restored when a session opens (D18).
   and `mod+m`/`mod+c` focus its regions; opening a session from the overlay
   shows the chat again. Reason: the chat stays present without owning the
   screen.
-- **D22 — Two wireframes, one per state.** `chat.wireframe.svg` draws the
+- **D22 — Three wireframes, one per state.** `chat.wireframe.svg` draws the
   launch state (files panel + full-main chat);
   `chat.wireframe.sessions.svg` draws the workspace (editor + chat column)
-  with the sessions overlay open. One frame cannot carry both states
-  honestly. Reason: the overlay and the two chat placements are runtime
-  states; the layout file's Meta notes them.
+  with the sessions overlay open; `chat.wireframe.jobs.svg` draws the
+  read-only jobs overlay with the job tree and a peek preview. One frame
+  cannot carry every state honestly. Reason: the overlays and the two chat
+  placements are runtime states; the layout file's Meta notes them.
+- **D23 — The jobs overlay is read-only and tick-free.** `mod+j` opens a
+  floating overlay of the launch's jobs as the manager's tree, with the
+  selected job's peek (state, last tick, output so far); `j`/`k` move, `r`
+  refreshes on demand, and job transitions refresh it while it is open. It
+  never starts, kills, or controls a job — start, peep, kill, and the tick
+  cadence stay with the tool manager — and ticks never become transcript
+  entries. Reason: the writer sees what is running without the transcript
+  losing its one narrative surface (system #15).
 
 ## Stack
 
@@ -331,14 +367,15 @@ switches, and restored when a session opens (D18).
   plugin install path (D19).
 - **Plugin language:** Lua, living in this repository as the `nvchat`
   configuration — repo root `init.lua` plus `lua/nvchat/` modules
-  (`state`, `store`, `ui`, `files`, `sessions`, `messages`, `composer`,
-  `draft`, `render`). The repository is the config; neo-tree v3 with
+  (`state`, `store`, `ui`, `files`, `sessions`, `jobs`, `messages`,
+  `composer`, `draft`, `render`). The repository is the config; neo-tree v3 with
   `plenary.nvim` and `nui.nvim` is installed by `vim.pack` under the
   `nvchat` appname (D1, D19).
 - **Design formats:** LAYOUT v1 ([chat.layout.txt](../chat.layout.txt)),
   Pseudolanguage ([chat.pseudo](../chat.pseudo)), SVG
   ([chat.wireframe.svg](../chat.wireframe.svg),
-  [chat.wireframe.sessions.svg](../chat.wireframe.sessions.svg)).
+  [chat.wireframe.sessions.svg](../chat.wireframe.sessions.svg),
+  [chat.wireframe.jobs.svg](../chat.wireframe.jobs.svg)).
 - **Tooling:** [tools/svg2png.sh](../tools/svg2png.sh) (rsvg-convert) and
   [tools/svg2ascii.py](../tools/svg2ascii.py) (grid-aware text render).
 - **Testing:** terminal screenshots read as images, at 1280×800 and the
