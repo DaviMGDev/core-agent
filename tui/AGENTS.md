@@ -113,7 +113,6 @@ A change is not done until:
 
 - Adding a screen, region, widget, or spec section.
 - Changing a recorded decision (supersede it, never silently rewrite it).
-- Adding dependencies beyond Neovim + Lua.
 - Deleting or renaming any artifact.
 
 ### 🚫 Never

@@ -112,3 +112,8 @@ updated: "2026-10-09"
   `chat.pseudo`, `idea.md`, `chat.layout.txt`, and the wireframe SVG/PNG/
   ASCII renders are reconciled with `tui.pseudo`. Reason: the accepted v2
   charter — one agent, one link, flat chats.
+- Removed the dependency restriction: D11 no longer forbids dependencies
+  beyond Neovim + Lua, and `tui/AGENTS.md` no longer asks first for them.
+  Dependencies are ordinary practice (D19 already installs plenary and nui
+  with `vim.pack`). Reason: user direction — the restriction was not
+  intended.

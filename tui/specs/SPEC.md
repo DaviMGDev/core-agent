@@ -278,9 +278,8 @@ switches, and restored when a session opens (D18).
   visible to the writer, and attribute-only decoration is the smallest need
   that forces extmarks (D6).
 - **D11 — The sidebar is plain Neovim windows.** A real full-height
-  vertical split with its own buffer and a hand-rolled tree; no neo-tree or
-  other dependency beyond Neovim + Lua. Reason: keep the sandbox
-  dependency-free.
+  vertical split with its own buffer and a hand-rolled tree. (Superseded by
+  D19; dependencies are not restricted.)
 - **D12 — The store is core-backed.** `list` / `recent` / `load` / `deliver`
   stay the interface; the store module spawns `core-agent -tui` per launch
   and speaks the JSON-lines link, so the UI never learns which backend owns
