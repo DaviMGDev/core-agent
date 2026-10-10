@@ -14,7 +14,7 @@ Every plugin is one directory:
 - `plugins/<name>/guest/` — the frozen wasip1 `package main`: the dynamic-extension route, neither built nor exercised by the suite
 - `plugins/<name>/specs/` — the plugin's own contract (Gherkin features included)
 
-Host-side components — the tool manager, the notification bus, and the subagent runner — follow the same shape but run in the host process, wired into the native components as the job service, the publish path, and a manager tool; extension guests reach them only through the host ABI.
+Host-side components — the tool manager, the notification bus, the subagent runner, and the bash runner — follow the same shape but run in the host process, wired into the native components as the job service, the publish path, and manager tools; extension guests reach them only through the host ABI.
 
 A chat turn flows through the composed plugins over typed in-process contracts (the same operation documents):
 
@@ -45,6 +45,7 @@ The tools the composition declares:
 | Tool | Role |
 |---|---|
 | `subagent` | call an agent with a brief; the reply returns as the job's result |
+| `bash` | run a shell command as one job; the result carries the exit code, stdout, and stderr |
 | `jobs` | list the jobs visible to the caller in creation order: id, tool, state, and age |
 | `peep` | observe one job: state, last tick, and output so far |
 | `kill` | accept a kill, honored at the job's next safe point; the result reports the state at acceptance |
@@ -67,7 +68,7 @@ wake the agent in clock batches, and a batched tick wake is a normal turn.
 | `agent` | `chat-history`, `model-registry`, `llm-context` | `agent-loop` | the turn loop: one `chat.message` per turn, jobs as tools, its own context |
 | `repl-chat` | `agent-loop` | `repl` | the terminal: prompt, commands, renders `chat.message` wakes |
 
-Host-side components: `tool-manager` (registry and jobs, declaring the `jobs`, `peep`, and `kill` tools above), `notifications` (the queued bus), and `subagent` (the manager tool that calls an agent).
+Host-side components: `tool-manager` (registry and jobs, declaring the `jobs`, `peep`, and `kill` tools above), `notifications` (the queued bus), `subagent` (the manager tool that calls an agent), and `bash` (the manager tool that runs one shell command per job).
 
 The defaults are native components sharing one host-side key set (`internal/keys`); the committed `.wasm` guests stay as the unexercised extension route.
 
@@ -152,6 +153,7 @@ plugins/<name>/        library, native component, tests, frozen guest, package-l
 plugins/tool-manager/  host-side: the tool registry and job engine
 plugins/notifications/ host-side: the queued event bus
 plugins/subagent/      host-side: an agent callable as a tool
+plugins/bash/          host-side: a shell command as a job (exit code, stdout, stderr)
 internal/link/         the TUI link codec (JSON lines) and its tests
 cmd/core-agent/        entry: composes the plugins and the agent layer, drives the REPL or the TUI link
 cmd/build-plugins.sh   rebuilds the frozen guests (extension route)
