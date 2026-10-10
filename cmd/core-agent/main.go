@@ -273,6 +273,15 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 	if err := manager.Registry().Declare(subagent.Tool(agentComp, manager, subagent.Options{Call: callGate})); err != nil {
 		return abort(fmt.Errorf("core-agent: subagent tool: %w", err))
 	}
+	// The job surface joins the registry beside the subagent: every tool in
+	// the registry is presented to the agent natively, so the model can list,
+	// observe, and kill the launch's jobs instead of narrating control it does
+	// not have.
+	for _, t := range toolmanager.JobTools(manager) {
+		if err := manager.Registry().Declare(t); err != nil {
+			return abort(fmt.Errorf("core-agent: %s tool: %w", t.Name, err))
+		}
+	}
 
 	agentPayloadDoc, err := agentPayload(cfg.agent, manager.Registry())
 	if err != nil {

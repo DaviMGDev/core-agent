@@ -502,6 +502,42 @@ func TestRunWithoutCredentialSendsNoAuthorization(t *testing.T) {
 	}
 }
 
+// TestAgentPayloadListsJobTools proves the composition's declarations reach
+// the agent natively: jobs, peep, and kill travel with their schemas in the
+// top-level agent payload.
+func TestAgentPayloadListsJobTools(t *testing.T) {
+	manager := toolmanager.New(toolmanager.Options{})
+	for _, tool := range toolmanager.JobTools(manager) {
+		if err := manager.Registry().Declare(tool); err != nil {
+			t.Fatalf("Declare(%s): %v", tool.Name, err)
+		}
+	}
+	raw, err := agentPayload(`{"conversation":"main","model":"fast"}`, manager.Registry())
+	if err != nil {
+		t.Fatalf("agentPayload: %v", err)
+	}
+	var cfg agent.Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("Unmarshal agent payload: %v", err)
+	}
+	for _, tool := range cfg.Tools {
+		if tool.Name == toolmanager.PeepToolName || tool.Name == toolmanager.KillToolName {
+			if len(tool.Parameters) == 0 || !strings.Contains(string(tool.Parameters), "job") {
+				t.Errorf("tool %s schema = %s, want a job parameter", tool.Name, tool.Parameters)
+			}
+		}
+	}
+	names := make(map[string]bool)
+	for _, tool := range cfg.Tools {
+		names[tool.Name] = true
+	}
+	for _, want := range []string{toolmanager.JobsToolName, toolmanager.PeepToolName, toolmanager.KillToolName} {
+		if !names[want] {
+			t.Errorf("agent payload missing tool %q: %+v", want, cfg.Tools)
+		}
+	}
+}
+
 // TestComposedAgentConfigListsSubagentTool proves the entry injects the
 // registry's tools, schemas included, into the top-level agent payload so the
 // provider request carries the subagent tool natively.
