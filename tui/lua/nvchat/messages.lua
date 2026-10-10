@@ -170,22 +170,39 @@ local function block_at_cursor()
   return nil
 end
 
--- yank_block() -> yanks the whole selected block (sender row and body,
--- without the trailing blank). Copy is the job: the block always lands on
--- the unnamed register and the system clipboard; a named register the
--- writer asked for ("ay) receives it too. A stale v:register must never
--- stop the clipboard copy.
-function M.yank_block()
-  local block = block_at_cursor()
-  if not block then
+-- blocks_in_range(first, last) -> the whole blocks the line range covers,
+-- in order: a block is covered when any of its lines lies in the range
+-- (D24). A range that touches no block yanks nothing.
+local function blocks_in_range(first, last)
+  local covered = {}
+  for _, block in ipairs(state.message_blocks) do
+    if block.last >= first and block.first <= last then
+      covered[#covered + 1] = block
+    end
+  end
+  return covered
+end
+
+-- yank_blocks(blocks) -> copies whole blocks to the registers: every
+-- block's sender row and body, one blank line between messages, no
+-- trailing blank. Copy is the job: the blocks always land on the unnamed
+-- register and the system clipboard; a named register the writer asked for
+-- ("ay) receives them too. A stale v:register must never stop the
+-- clipboard copy.
+function M.yank_blocks(blocks)
+  if #blocks == 0 then
     return
   end
-  local lines = vim.api.nvim_buf_get_lines(
-    state.bufs.messages,
-    block.first - 1,
-    block.last,
-    false
-  )
+  local lines = {}
+  for i, block in ipairs(blocks) do
+    if i > 1 then
+      lines[#lines + 1] = ""
+    end
+    vim.list_extend(
+      lines,
+      vim.api.nvim_buf_get_lines(state.bufs.messages, block.first - 1, block.last, false)
+    )
+  end
   vim.fn.setreg('"', lines, "V")
   local ok, err = pcall(vim.fn.setreg, "+", lines, "V")
   if not ok then
@@ -194,6 +211,14 @@ function M.yank_block()
   local register = vim.v.register
   if register and register ~= "" and register ~= '"' and register ~= "+" and register ~= "*" then
     vim.fn.setreg(register, lines, "V")
+  end
+end
+
+-- yank_block() -> yanks the block under the cursor (D3).
+function M.yank_block()
+  local block = block_at_cursor()
+  if block then
+    M.yank_blocks({ block })
   end
 end
 
@@ -259,14 +284,22 @@ function M.attach()
     desc = "nvchat: yank the selected message block",
   })
   vim.keymap.set("x", "y", function()
-    M.yank_block()
-    -- The block is the unit (D3): a visual yank copies it whole and leaves
-    -- visual mode instead of keeping the character-wise selection.
+    -- D24: a visual selection spans whole blocks. The range snaps outward,
+    -- so a selection that crosses message boundaries copies every covered
+    -- message whole and never a partial one.
+    local first = vim.fn.getpos("v")[2]
+    local last = vim.fn.getpos(".")[2]
+    if first > last then
+      first, last = last, first
+    end
+    M.yank_blocks(blocks_in_range(first, last))
+    -- The block is the unit (D3): a visual yank copies whole blocks and
+    -- leaves visual mode instead of keeping the character-wise selection.
     local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
     vim.api.nvim_feedkeys(esc, "n", false)
   end, {
     buffer = state.bufs.messages,
-    desc = "nvchat: yank the selected message block",
+    desc = "nvchat: yank the covered message blocks",
   })
 end
 

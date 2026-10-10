@@ -18,6 +18,14 @@ updated: "2026-10-09"
   added; the surface, architecture, and stack sections note the `jobs`
   module and the read-only `jobs`/`peek` store queries. Reason: user
   direction — the writer sees what is running without leaving the chat.
+- Added D24: a visual selection in the message list yanks every whole block
+  it covers, in order, one blank line between messages — `ggVGy` copies the
+  whole conversation. D3's block unit stands (no partial message is copied)
+  and normal-mode `y`/`yy` keep the single selected block. Reason: user
+  direction — yank must not be limited to one message at a time.
+  `message-list.feature` gains range and whole-conversation scenarios,
+  `chat.pseudo` records the range decision, and `messages.lua` implements
+  the snapped range yank.
 
 ## 2026-10-08
 

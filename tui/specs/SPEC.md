@@ -98,7 +98,8 @@ Story: US-002 — Read a conversation
 
 As the writer,
 I want a scrollable message list with senders and whole-message selection,
-so that I can read a conversation and copy any message in full.
+so that I can read a conversation and copy any message — or a run of
+messages — in full.
 
 Acceptance criteria (EARS):
 
@@ -106,6 +107,8 @@ Acceptance criteria (EARS):
   body.
 - WHEN the writer moves the cursor to a message THE system SHALL select the
   whole block.
+- WHEN the writer yanks a visual selection THE system SHALL copy every whole
+  message block it covers, in order.
 - WHEN a reply arrives THE system SHALL append it to the message list.
 - WHEN a job changes state THE system SHALL append a system entry to the
   message list.
@@ -202,7 +205,7 @@ overlay open), each rendered to PNG and, as text, `.ascii.txt` next to it
 | Files panel | `sidebar:open` | neo-tree over the filesystem; toggles, opens files |
 | Editor | `editor:open` | normal Neovim windows for opened files |
 | Chat | `chat:visible` | the message list and composer column |
-| Message list | `message-list` | scrollable; block-level selection |
+| Message list | `message-list` | scrollable; whole-block selection, single or ranged |
 | Composer | `composer` | a real buffer holding the draft |
 | Sessions overlay | `sessions:closed` | floating browser for the launch's chats |
 | Jobs overlay | `jobs:closed` | read-only floating view of the launch's jobs: the manager's tree with a peek preview |
@@ -360,6 +363,14 @@ switches, and restored when a session opens (D18).
   cadence stay with the tool manager — and ticks never become transcript
   entries. Reason: the writer sees what is running without the transcript
   losing its one narrative surface (system #15).
+- **D24 — A visual selection yanks whole blocks (extends D3).** A visual
+  selection in the message list snaps outward to whole message blocks: a
+  yank copies every covered block in order — sender row and body, one blank
+  line between messages — and leaves visual mode, so `ggVGy` copies the
+  whole conversation. D3's block unit stands: no partial message is ever
+  copied, and normal-mode `y`/`yy` keep the single selected block. Reason:
+  user direction — the writer must be able to copy a whole conversation,
+  not one message at a time.
 
 ## Stack
 

@@ -78,6 +78,44 @@ check(
   clip_ok and type(clip) == "string" and clip:find("hello ui", 1, true) ~= nil
 )
 
+-- D24: a visual range snaps to whole blocks. A second exchange gives the
+-- list several blocks; a range that starts inside the second block's body
+-- must still copy that block whole, and ggVGy must copy everything.
+vim.api.nvim_buf_set_lines(state.bufs.composer, 0, -1, false, { "second ui" })
+vim.bo[state.bufs.composer].modified = false
+composer.send()
+vim.wait(60000, function()
+  return #chat.messages >= 4
+end, 20)
+messages.render()
+messages.show_newest()
+
+local function occurrences(text, word)
+  local _, n = text:gsub(word, "")
+  return n
+end
+
+local second = state.message_blocks[2]
+yank_keys((second.first + 1) .. "GVGy")
+local ranged = vim.fn.getreg('"')
+check(
+  "a ranged yank covers whole blocks from inside the first one",
+  ranged:sub(1, 9) == "assistant"
+    and occurrences(ranged, "assistant") == 2
+    and ranged:find("second ui", 1, true) ~= nil
+)
+yank_keys("ggVGy")
+local whole = vim.fn.getreg('"')
+check(
+  "yank ggVGy copies the whole conversation",
+  whole:sub(1, 3) == "you"
+    and occurrences(whole, "assistant") == 2
+    and whole:find("hello ui", 1, true) ~= nil
+    and whole:find("second ui", 1, true) ~= nil
+    and whole:find("\n\n", 1, true) ~= nil
+)
+check("the whole-conversation yank is the longer one", #whole > #ranged)
+
 -- Reload: the screen is rebuilt in place; the core and chats survive.
 local old_msgs = state.bufs.messages
 local core = store.job_id()

@@ -28,6 +28,17 @@ Feature: Message list
       When the writer yanks the selection
       Then the yank contains the sender row and the whole body
 
+    Scenario: Yanking a range of messages
+      Given messages are selected across several blocks
+      When the writer yanks the selection
+      Then the yank contains every covered block in order
+      And each covered block keeps its sender row and its whole body
+
+    Scenario: Yanking the whole conversation
+      Given the whole message list is selected
+      When the writer yanks the selection
+      Then the yank contains every message of the open chat
+
   Rule: New messages never steal the reading position
 
     Scenario: A reply arrives while the newest message is in view
