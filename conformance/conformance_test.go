@@ -5,6 +5,7 @@ package conformance
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/cucumber/godog"
 
 	"github.com/DaviMGDev/core-agent/plugins/agent"
+	"github.com/DaviMGDev/core-agent/plugins/bash"
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	contextmanager "github.com/DaviMGDev/core-agent/plugins/context-manager"
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
@@ -46,6 +48,7 @@ func TestFeatures(t *testing.T) {
 				"../plugins/notifications/specs/features/notifications.feature",
 				"../plugins/tool-manager/specs/features/tool-manager.feature",
 				"../plugins/subagent/specs/features/subagent.feature",
+				"../plugins/bash/specs/features/bash.feature",
 				"../plugins/agent/specs/features/agent.feature",
 				"../plugins/provider-openai/specs/features/provider-openai.feature",
 			},
@@ -70,6 +73,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerNotificationsSteps(sc)
 	registerToolManagerSteps(sc)
 	registerSubagentSteps(sc)
+	registerBashSteps(sc)
 	registerAgentSteps(sc)
 	registerProviderOpenAISteps(sc)
 	registerSystemSteps(sc)
@@ -164,6 +168,17 @@ type world struct {
 	subChild   *toolmanager.Job
 	subEvents  <-chan toolmanager.Event
 
+	// bash
+	bashManager    *toolmanager.Manager
+	bashJob        *toolmanager.Job
+	bashResult     bash.Result
+	bashError      string
+	bashKillStatus toolmanager.Status
+	bashDir        string
+	bashFIFO       string
+	bashShellPID   int
+	bashChildPID   int
+
 	// shared
 	err error
 
@@ -216,6 +231,12 @@ func (w *world) close() {
 	}
 	if w.subSched != nil {
 		_ = w.subSched.Close()
+	}
+	if w.bashManager != nil {
+		w.bashManager.Close()
+	}
+	if w.bashDir != "" {
+		_ = os.RemoveAll(w.bashDir)
 	}
 }
 
