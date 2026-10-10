@@ -12,6 +12,7 @@ type recordingDeps struct {
 	published []string
 	jobs      []string
 	presented []Tool
+	responded []Message
 	answer    Answer
 }
 
@@ -29,6 +30,7 @@ func (r *recordingDeps) deps() Deps {
 		},
 		Respond: func(text string, context []Message, tools []Tool) (Answer, error) {
 			r.presented = tools
+			r.responded = context
 			return r.answer, nil
 		},
 		StartJob: func(tool string, args json.RawMessage) (string, error) {
@@ -127,6 +129,54 @@ func TestRespondReceivesThePresentedSurface(t *testing.T) {
 	}
 	if string(tool.Parameters) != string(schema) {
 		t.Fatalf("presented parameters = %s, want the argument schema", tool.Parameters)
+	}
+}
+
+func TestSystemMessageNamesExactlyThePresentedTools(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"brief":{"type":"string"}},"required":["brief"]}`)
+	r := &recordingDeps{answer: Answer{Text: "done"}}
+	cfg := Config{
+		Tools: []Tool{
+			{Name: "subagent", Description: "call an agent", Parameters: schema},
+			{Name: "bash", Description: "run a command"},
+			{Name: "jobs", Description: "list jobs"},
+		},
+		Hidden:  []string{"bash"},
+		Renamed: map[string]string{"subagent": "delegate"},
+	}
+	if _, err := RunTurn(cfg, "hi", r.deps()); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(r.responded) == 0 {
+		t.Fatal("no context reached the model")
+	}
+	system := 0
+	for _, m := range r.responded {
+		if m.Role == SystemRole {
+			system++
+		}
+	}
+	if system != 1 {
+		t.Fatalf("context carries %d system messages, want exactly one", system)
+	}
+	first := r.responded[0]
+	if first.Role != SystemRole {
+		t.Fatalf("first context message has role %q, want the system message first", first.Role)
+	}
+	for _, name := range []string{"delegate", "jobs"} {
+		if !strings.Contains(first.Text, name) {
+			t.Errorf("system message does not name presented tool %q:\n%s", name, first.Text)
+		}
+	}
+	for _, name := range []string{"bash", "subagent"} {
+		if strings.Contains(first.Text, name) {
+			t.Errorf("system message names %q, which is hidden or pre-rename:\n%s", name, first.Text)
+		}
+	}
+	for _, area := range []string{"capabilities", "silence", "factually", "delegated"} {
+		if !strings.Contains(first.Text, area) {
+			t.Errorf("system message misses the %q policy:\n%s", area, first.Text)
+		}
 	}
 }
 
