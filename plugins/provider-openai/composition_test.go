@@ -4,58 +4,42 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	providermanager "github.com/DaviMGDev/core-agent/plugins/provider-manager"
 	mcontext "github.com/DaviMGDev/memento/context"
-	"github.com/DaviMGDev/memento/plugins/wasm"
 	"github.com/DaviMGDev/memento/runtime"
 )
 
-// TestActivationRegistersAndUnloadUnregisters composes the real guests the
-// way cmd/core-agent does — provider-manager first, provider-openai after —
-// and proves the lifecycle: activation registers openai into the live
-// registry, and unloading the plugin removes it again.
+// TestActivationRegistersAndUnloadUnregisters composes the native components
+// the way cmd/core-agent does — provider-manager first, provider-openai
+// after — and proves the lifecycle: activation registers openai into the
+// live registry, and unloading the plugin removes it again.
 func TestActivationRegistersAndUnloadUnregisters(t *testing.T) {
 	ctx := context.Background()
-	var log transcript
-	engine, err := wasm.NewEngine(ctx)
-	if err != nil {
-		t.Fatalf("engine: %v", err)
-	}
-	defer engine.Close(ctx)
-
-	keys := wasm.NewKeyRegistry()
-	pmComp, err := wasm.NewComponent(ctx, engine, providermanager.Wasm,
-		wasm.WithKeyRegistry(keys),
-		wasm.WithLogWriter(&log),
-		wasm.WithModuleName("provider-manager"),
-	)
-	if err != nil {
-		t.Fatalf("provider-manager component: %v", err)
-	}
-	poComp, err := wasm.NewComponent(ctx, engine, Wasm,
-		wasm.WithKeyRegistry(keys),
-		wasm.WithLogWriter(&log),
-		wasm.WithModuleName("provider-openai"),
-	)
-	if err != nil {
-		t.Fatalf("provider-openai component: %v", err)
-	}
+	var log lockedBuffer
+	pmComp := providermanager.NewComponent(&log)
+	poComp := NewComponent(&log)
 
 	sched := runtime.New()
 	defer sched.Close()
 
+	// Inserts are strictly sequenced with activation between them: an
+	// activating worker reads the scheduler's fiber table through
+	// runtime.Get, which races with the loop's own table writes while it
+	// still has inserts to process.
 	pmID, err := sched.Insert(pmComp, `{"providers":[]}`)
 	if err != nil {
 		t.Fatalf("insert provider-manager: %v", err)
 	}
+	waitActive(t, sched, pmID)
 	poID, err := sched.Insert(poComp, "")
 	if err != nil {
 		t.Fatalf("insert provider-openai: %v", err)
 	}
-	waitActive(t, sched, pmID, poID)
+	waitActive(t, sched, poID)
 
 	listed := func() []string {
 		raw, err := pmComp.Handle(ctx, []byte(`{"op":"list"}`))
@@ -106,30 +90,9 @@ func TestActivationRegistersAndUnloadUnregisters(t *testing.T) {
 // untouched, and unloading the plugin keeps the entry.
 func TestActivationLeavesExistingEntry(t *testing.T) {
 	ctx := context.Background()
-	var log transcript
-	engine, err := wasm.NewEngine(ctx)
-	if err != nil {
-		t.Fatalf("engine: %v", err)
-	}
-	defer engine.Close(ctx)
-
-	keys := wasm.NewKeyRegistry()
-	pmComp, err := wasm.NewComponent(ctx, engine, providermanager.Wasm,
-		wasm.WithKeyRegistry(keys),
-		wasm.WithLogWriter(&log),
-		wasm.WithModuleName("provider-manager"),
-	)
-	if err != nil {
-		t.Fatalf("provider-manager component: %v", err)
-	}
-	poComp, err := wasm.NewComponent(ctx, engine, Wasm,
-		wasm.WithKeyRegistry(keys),
-		wasm.WithLogWriter(&log),
-		wasm.WithModuleName("provider-openai"),
-	)
-	if err != nil {
-		t.Fatalf("provider-openai component: %v", err)
-	}
+	var log lockedBuffer
+	pmComp := providermanager.NewComponent(&log)
+	poComp := NewComponent(&log)
 
 	sched := runtime.New()
 	defer sched.Close()
@@ -138,11 +101,12 @@ func TestActivationLeavesExistingEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert provider-manager: %v", err)
 	}
+	waitActive(t, sched, pmID)
 	poID, err := sched.Insert(poComp, "")
 	if err != nil {
 		t.Fatalf("insert provider-openai: %v", err)
 	}
-	waitActive(t, sched, pmID, poID)
+	waitActive(t, sched, poID)
 
 	if got := log.String(); !strings.Contains(got, "already registered, leaving it") {
 		t.Fatalf("log missing the leave-untouched line:\n%s", got)
@@ -175,30 +139,9 @@ func TestActivationLeavesExistingEntry(t *testing.T) {
 // JSON payload registers exactly that provider instead of the defaults.
 func TestActivationRegistersCustomPayload(t *testing.T) {
 	ctx := context.Background()
-	var log transcript
-	engine, err := wasm.NewEngine(ctx)
-	if err != nil {
-		t.Fatalf("engine: %v", err)
-	}
-	defer engine.Close(ctx)
-
-	keys := wasm.NewKeyRegistry()
-	pmComp, err := wasm.NewComponent(ctx, engine, providermanager.Wasm,
-		wasm.WithKeyRegistry(keys),
-		wasm.WithLogWriter(&log),
-		wasm.WithModuleName("provider-manager"),
-	)
-	if err != nil {
-		t.Fatalf("provider-manager component: %v", err)
-	}
-	poComp, err := wasm.NewComponent(ctx, engine, Wasm,
-		wasm.WithKeyRegistry(keys),
-		wasm.WithLogWriter(&log),
-		wasm.WithModuleName("provider-openai"),
-	)
-	if err != nil {
-		t.Fatalf("provider-openai component: %v", err)
-	}
+	var log lockedBuffer
+	pmComp := providermanager.NewComponent(&log)
+	poComp := NewComponent(&log)
 
 	sched := runtime.New()
 	defer sched.Close()
@@ -207,11 +150,12 @@ func TestActivationRegistersCustomPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert provider-manager: %v", err)
 	}
+	waitActive(t, sched, pmID)
 	poID, err := sched.Insert(poComp, `{"name":"proxy","endpoint":"http://127.0.0.1:11434/v1","models":["llama-3.2"]}`)
 	if err != nil {
 		t.Fatalf("insert provider-openai: %v", err)
 	}
-	waitActive(t, sched, pmID, poID)
+	waitActive(t, sched, poID)
 
 	raw, err := pmComp.Handle(ctx, []byte(`{"op":"list"}`))
 	if err != nil {
@@ -238,12 +182,24 @@ func TestActivationRegistersCustomPayload(t *testing.T) {
 	waitGone(t, sched, pmID)
 }
 
-type transcript struct {
+// lockedBuffer is a concurrency-safe transcript sink: activating workers
+// log concurrently, and the shared log must not race.
+type lockedBuffer struct {
+	mu  sync.Mutex
 	buf strings.Builder
 }
 
-func (t *transcript) Write(p []byte) (int, error) { return t.buf.Write(p) }
-func (t *transcript) String() string              { return t.buf.String() }
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.WriteString(string(p))
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 func waitActive(t *testing.T, sched *runtime.Scheduler, ids ...mcontext.FiberID) {
 	t.Helper()
