@@ -69,6 +69,26 @@ func providersOf(t *testing.T, doc []byte) []providerEntry {
 
 // --- Precedence (leaf 2.1) ---
 
+func TestClockSettingDefaultsAndOverlays(t *testing.T) {
+	s := newSandbox(t)
+	cfg, err := Load(s.opts())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Settings.Clock.PeriodMS != 500 {
+		t.Errorf("default clock period = %d, want 500", cfg.Settings.Clock.PeriodMS)
+	}
+
+	s.userFile(t, SettingsFile, `{"clock":{"period_ms":25}}`)
+	cfg, err = Load(s.opts())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Settings.Clock.PeriodMS != 25 {
+		t.Errorf("user clock period = %d, want 25", cfg.Settings.Clock.PeriodMS)
+	}
+}
+
 func TestUserOverridesDefaults(t *testing.T) {
 	s := newSandbox(t)
 	s.userFile(t, SettingsFile, `{"nick":"user","context":{"budget":128}}`)

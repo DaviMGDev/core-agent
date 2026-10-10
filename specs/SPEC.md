@@ -261,10 +261,17 @@ job emits `job.tick` on its interval (the caller's, else 30s) — a clock
 nudge, never a health claim — and its end emits `job.completed` or
 `job.failed`; reclamation on unload emits nothing. The bus queues every
 event and wakes subscribers without blocking the publisher; one wake carries
-every event queued at that point. Events route by the job tree: a root job's
-events publish on the bus, a child's go to its parent's listener and nowhere
-else. The entry wakes the agent for its root jobs' ticks, completions,
-failures, and kills; the agent decides whether to speak.
+every event queued at that point. The entry subscribes the agent's wake
+through the notification clock (settings `clock.period_ms`, default 500):
+queued job events flush together as one wake on each period boundary, a
+boundary with nothing queued wakes no one, and events that arrive during a
+wake wait for the next boundary. State transitions still stream to an
+observing surface as they happen, and nothing the agent experiences is
+suppressed — a batched tick wake is a normal turn whose speech crosses as
+any other message. Events route by the job tree: a root job's events publish
+on the bus, a child's go to its parent's listener and nowhere else. The entry
+wakes the agent for its root jobs' ticks, completions, failures, and kills;
+the agent decides whether to speak.
 
 **Subagents.** A subagent is an agent the manager can call: the `subagent`
 tool's runner invokes the same agent loop with the child's own conversation,
@@ -336,7 +343,7 @@ project scope (`./.core`), each carrying the same four files:
 
 | File | Responsibility |
 |---|---|
-| `settings.json` | entry knobs: nick, conversation, context budget, agent model view |
+| `settings.json` | entry knobs: nick, conversation, context budget, agent model view, clock period |
 | `providers.json` | the provider document (`{name, endpoint, credential, models}`) |
 | `models.json` | the model views (alias, fallback, discuss) |
 | `auth.json` | credentials by name; user scope only, mode 0600 |
@@ -507,3 +514,11 @@ host-side anymore.
   `message`, `loaded`, `job`, and `error` out (schema in TUI Link). JSON
   lines is the charter's wire-encoding open elected for the MVP — the least
   carrier for a child process that already has a voice. (`tui.pseudo`.)
+- **D19 — The notification clock batches wakes, it never hides.** The
+  agent's job wakes subscribe through the clock (`clock.period_ms`, default
+  500): queued events flush together on a boundary, an empty boundary wakes
+  no one, and events that arrive during a wake wait for the next boundary.
+  Transitions still stream immediately to an observing surface, and the
+  clock suppresses nothing the agent experiences — a batched tick wake is a
+  normal turn, so the model may speak and its speech crosses as any other
+  message. (#16, exhibitions principle.)

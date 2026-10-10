@@ -29,7 +29,7 @@ const DefaultNick = "agent"
 
 // The embedded defaults: the shipped configuration, the layer's bottom.
 const (
-	DefaultSettings  = `{"nick":"agent","conversation":"main","context":{"budget":4096},"agent":{"model":"fast"}}`
+	DefaultSettings  = `{"nick":"agent","conversation":"main","context":{"budget":4096},"agent":{"model":"fast"},"clock":{"period_ms":500}}`
 	DefaultProviders = `{"providers":[{"name":"ollama","endpoint":"https://ollama.com/v1","credential":"auth:ollama","models":["gemma4:cloud"]}]}`
 	DefaultModels    = `{"models":[{"name":"fast","alias":"gemma4:cloud"},{"name":"reliable","fallback":["gemma4:cloud"]}]}`
 )
@@ -40,6 +40,7 @@ type Settings struct {
 	Conversation string          `json:"conversation"`
 	Context      ContextSettings `json:"context"`
 	Agent        AgentSettings   `json:"agent"`
+	Clock        ClockSettings   `json:"clock"`
 }
 
 // ContextSettings bounds the projected context window.
@@ -50,6 +51,13 @@ type ContextSettings struct {
 // AgentSettings selects the model view the agent resolves.
 type AgentSettings struct {
 	Model string `json:"model"`
+}
+
+// ClockSettings configures the notification clock: queued job events flush
+// together every PeriodMS, and a boundary with nothing queued wakes no one.
+// Zero delivers every event immediately.
+type ClockSettings struct {
+	PeriodMS int `json:"period_ms"`
 }
 
 // Options locates the layer. Every field is injectable for tests; an empty
