@@ -1,0 +1,50 @@
+                              │ -- nvchat — the chat screen.                                                  │ assistant  12:04
+  ~/Draft/nvchat              │ local M = {}                                                                  │ The body of a message, wrapped to the
+  ▾ lua                       │                                                                               │ width of the panel.
+    ▾ nvchat                  │ function M.start()                                                            │
+      ui.lua                  │ state.started = true                                                          │ you  12:05
+│   init.lua                  │ state.sessions = store.list()                                                 │ Another message body, written by the
+  ▸ docs                      │ local recent = store.recent()                                                 │ reader.
+  README.md                   │ if recent then                                                                │
+                              │ M.open_session(recent)                                                        │
+                              │ end                                                                           │
+                              │ end                                                                           │
+                              │                 ┼─────────────────────────────────────────────────────────────┼─│
+                              │                 │ jobs                                                        │ │
+                              │                 │ job-12 subagent running 5m12s                               │ │
+                              │                 │ job-13 ok done 1.2s                                         │ │
+                              │                 │ job-14 subagent running 12s                                 │ │
+                              │                 │ job-15 jobs done 40ms                                       │ │
+                              │                 │                                                             │ │
+                              │                 │ peek job-12 — running                                       │ │
+                              │                 │ tool: subagent                                              │ │
+                              │                 │ age: 5m12s · idle: 3s                                       │ │
+                              │                 │ last tick: 12:04:05                                         │ │
+                              │                 │ output:                                                     │ │
+                              │                 │ Step 2 of the report…                                       │ │
+                              │                 │ … (truncated)                                               │ │
+                              │                 │                                                j/k · r · esc│ │
+                              │                 ──────────────────────────────────────────────────────────────┼─
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               │
+                              │                                                                               ──────────────────────────────────────────────────
+                              │                                                                                 ▉
+                              │
+                              │
+                              │
+                              │
+  -- NORMAL --                                                                                                                         Chat one — 2 messages
