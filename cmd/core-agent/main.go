@@ -52,6 +52,12 @@ type sessionConfig struct {
 	agent       string
 	credentials func(name string) (string, bool)
 	onComposed  func(*toolmanager.Manager)
+	// clock is the notification clock's period: queued job events flush
+	// together on its boundaries. Zero delivers immediately.
+	clock time.Duration
+	// clockAfter supplies the clock's boundary channels; nil means
+	// time.After. Tests inject a manual clock.
+	clockAfter func(time.Duration) <-chan time.Time
 }
 
 // loadSession resolves the .core/ layer into a session configuration: it
@@ -92,6 +98,7 @@ func loadSession(mock bool, nick string) (sessionConfig, error) {
 		history:   payloads.History,
 		context:   payloads.Context,
 		agent:     payloads.Agent,
+		clock:     time.Duration(resolved.Settings.Clock.PeriodMS) * time.Millisecond,
 		credentials: func(name string) (string, bool) {
 			return resolved.Resolve(name, nil)
 		},
@@ -196,6 +203,7 @@ type composedSession struct {
 // ends a session; call it once.
 func (s *composedSession) Close() error {
 	s.manager.Close()
+	s.bus.Close()
 	var unloadErr error
 	for i := len(s.fibers) - 1; i >= 0; i-- {
 		if err := s.sched.Remove(s.fibers[i]); err != nil {
@@ -223,7 +231,7 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 		resolve = os.LookupEnv
 	}
 
-	bus := notifications.New()
+	bus := notifications.New(notifications.WithClock(cfg.clock, cfg.clockAfter))
 	manager := toolmanager.New(toolmanager.Options{Publisher: bus})
 	// The gate spans attribution to release for every agent call, so a job
 	// scoped to one turn cannot answer for the next.
@@ -320,9 +328,7 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	if err != nil {
 		return err
 	}
-	for _, topic := range jobWakeTopics {
-		s.bus.Subscribe(topic, agentWaker{ctx: ctx, comp: s.agent, log: out, gate: s.gate})
-	}
+	s.attachAgentWaker(out)
 
 	// The terminal guest is woken for every chat.message — a prompted reply
 	// and an unprompted message take the same path — while the host drives
@@ -392,6 +398,15 @@ var jobWakeTopics = []string{
 	notifications.TopicJobCompleted,
 	notifications.TopicJobFailed,
 	notifications.TopicJobKilled,
+}
+
+// attachAgentWaker subscribes the host's agent waker to the job wake topics
+// through the notification clock: queued events flush together on each
+// boundary, and a boundary with nothing queued wakes no one.
+func (s *composedSession) attachAgentWaker(log io.Writer) {
+	for _, topic := range jobWakeTopics {
+		s.bus.SubscribeClocked(topic, agentWaker{ctx: s.ctx, comp: s.agent, log: log, gate: s.gate})
+	}
 }
 
 // agentWaker wakes the top-level agent with one batch of its root jobs'
