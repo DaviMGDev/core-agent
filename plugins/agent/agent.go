@@ -97,43 +97,115 @@ type Answer struct {
 	Silence    bool            `json:"silence,omitempty"`
 }
 
-// ParseAnswer interprets one model answer: a strict JSON directive with only
-// tool/args/tool_call_id or silence fields is a directive; anything else (including
-// assistant speech that embeds JSON or carries conversational fields) is speech.
+// ParseAnswer interprets one model answer: a JSON directive carrying a tool call
+// or silence is recognized and parsed; anything else (including assistant speech
+// that embeds conversational fields or discusses JSON) is treated as speech.
 func ParseAnswer(text string) Answer {
 	trimmed := strings.TrimSpace(text)
-	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
-			if _, hasText := raw["text"]; hasText {
-				return Answer{Text: text}
-			}
-			if _, hasContent := raw["content"]; hasContent {
-				return Answer{Text: text}
-			}
-			if _, hasMessage := raw["message"]; hasMessage {
-				return Answer{Text: text}
-			}
-			validDirective := true
-			for k := range raw {
-				switch k {
-				case "tool", "args", "tool_call_id", "silence":
-				default:
-					validDirective = false
-				}
-			}
-			if validDirective {
-				if len(raw) == 0 {
-					return Answer{Silence: true}
-				}
-				var a Answer
-				if err := json.Unmarshal([]byte(trimmed), &a); err == nil && (a.Tool != "" || a.Silence) {
-					return a
-				}
-			}
+	if strings.HasPrefix(trimmed, "{") {
+		if a, ok := parseLeadingDirective(trimmed); ok {
+			return a
 		}
 	}
 	return Answer{Text: text}
+}
+
+func parseLeadingDirective(s string) (Answer, bool) {
+	inString := false
+	escaped := false
+	depth := 0
+	end := -1
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			continue
+		}
+
+		if c == '{' {
+			depth++
+		} else if c == '}' {
+			depth--
+			if depth == 0 {
+				end = i
+				break
+			}
+		}
+	}
+
+	if end == -1 {
+		return Answer{}, false
+	}
+
+	block := s[:end+1]
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(block), &raw); err != nil {
+		return Answer{}, false
+	}
+
+	// Conversational JSON fields signal speech, not a directive
+	if _, hasText := raw["text"]; hasText {
+		return Answer{}, false
+	}
+	if _, hasContent := raw["content"]; hasContent {
+		return Answer{}, false
+	}
+	if _, hasMessage := raw["message"]; hasMessage {
+		return Answer{}, false
+	}
+	if _, hasDesc := raw["description"]; hasDesc {
+		return Answer{}, false
+	}
+	if _, hasNote := raw["note"]; hasNote {
+		return Answer{}, false
+	}
+
+	// Empty object {} represents silence only when whole message is empty/whitespace
+	if len(raw) == 0 {
+		if strings.TrimSpace(s[end+1:]) == "" {
+			return Answer{Silence: true}, true
+		}
+		return Answer{}, false
+	}
+
+	// Silence directive
+	if sRaw, hasSilence := raw["silence"]; hasSilence {
+		var isSilent bool
+		if err := json.Unmarshal(sRaw, &isSilent); err == nil && isSilent {
+			if strings.TrimSpace(s[end+1:]) == "" {
+				return Answer{Silence: true}, true
+			}
+		}
+	}
+
+	// Tool directive
+	if tRaw, hasTool := raw["tool"]; hasTool {
+		var toolName string
+		if err := json.Unmarshal(tRaw, &toolName); err == nil && strings.TrimSpace(toolName) != "" {
+			a := Answer{Tool: strings.TrimSpace(toolName)}
+			if aRaw, hasArgs := raw["args"]; hasArgs && json.Valid(aRaw) {
+				a.Args = aRaw
+			}
+			if idRaw, hasID := raw["tool_call_id"]; hasID {
+				_ = json.Unmarshal(idRaw, &a.ToolCallID)
+			}
+			return a, true
+		}
+	}
+
+	return Answer{}, false
 }
 
 // Deps are the operations one turn reaches: the composed system's pipeline
@@ -186,6 +258,7 @@ func SystemMessage(cfg Config) Message {
 	}
 	b.WriteString("Do not claim capabilities you were not given, and never assert a result no tool returned.\n")
 	b.WriteString("Wakes arrive for user lines and background job events (ticks, completions, failures, kills), batched by the notification clock; unprompted job tick events indicate work is actively progressing in the background — you MUST answer unprompted job ticks with silence ({}); never re-issue an identical command while a job is running; user lines must always receive a response and never silence; when an unprompted background event wake needs no action, answer with silence — silence ends the turn with no message.\n")
+	b.WriteString("To call a tool, emit a single JSON directive {\"tool\": \"<name>\", \"args\": {...}} with no surrounding commentary; execute multiple commands one by one across turns; never invent job IDs, fake statuses, or simulated execution outputs — query active jobs using the peep or jobs tools.\n")
 	b.WriteString("Report tool failures factually — tool, state, and error as observed — without inventing a diagnosis.")
 	return Message{Role: SystemRole, Text: b.String()}
 }
@@ -251,6 +324,11 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 		answer, err := deps.Respond(line, context, presented)
 		if err != nil {
 			return TurnResult{}, err
+		}
+		if answer.Tool == "" && !answer.Silence && answer.Text != "" {
+			if parsed := ParseAnswer(answer.Text); parsed.Tool != "" || parsed.Silence {
+				answer = parsed
+			}
 		}
 		if answer.Tool != "" {
 			if deps.Execute != nil {

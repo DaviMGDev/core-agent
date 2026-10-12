@@ -351,6 +351,46 @@ func TestParseAnswer(t *testing.T) {
 	}
 }
 
+func TestParseAnswerExtractsDirectiveWithSurroundingSpeechAndExtraKeys(t *testing.T) {
+	// Mixed tool directive with extra keys and trailing conversational text
+	raw := `{"args":{"command":"sleep 10"},"job":"job-2","tool":"bash"}` + "\n\n" +
+		`Hello! I've started both sleep commands for you. Is there anything else you need?`
+
+	a := ParseAnswer(raw)
+	if a.Tool != "bash" {
+		t.Fatalf("Tool = %q, want bash", a.Tool)
+	}
+	if !strings.Contains(string(a.Args), "sleep 10") {
+		t.Fatalf("Args = %s, want sleep 10", string(a.Args))
+	}
+}
+
+func TestTurnExecutesExtractedDirectiveFromMixedSpeech(t *testing.T) {
+	mixed := `{"args":{"command":"sleep 10"},"job":"job-2","tool":"bash"}` + "\n\n" +
+		`Hello! I've started both sleep commands for you.`
+
+	r := &recordingDeps{
+		answer:     Answer{Text: mixed},
+		useExecute: true,
+		executeFn: func(tool string, args json.RawMessage) (any, error) {
+			return map[string]any{"job": "job-2", "status": "started"}, nil
+		},
+	}
+	res, err := RunTurn(Config{}, "hi", r.deps())
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Job != "job-2" {
+		t.Fatalf("res.Job = %q, want job-2", res.Job)
+	}
+	if res.Spoke || len(r.published) != 0 {
+		t.Fatalf("tool call leaked as speech: res=%+v, published=%v", res, r.published)
+	}
+	if len(r.executed) != 1 || r.executed[0] != "bash" {
+		t.Fatalf("executed = %v, want bash", r.executed)
+	}
+}
+
 func TestConversationalJSONIsNotHijackedAsDirective(t *testing.T) {
 	cases := []string{
 		`Here is a tool configuration: {"tool":"read","args":{"path":"/tmp"}}`,
