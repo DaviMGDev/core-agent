@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -299,3 +300,33 @@ func TestMockCallerEchoesModelAndContext(t *testing.T) {
 		t.Fatalf("Complete(no user) = %q, want the last message", got)
 	}
 }
+
+func TestContextMessageSupportsToolRoleAndCallID(t *testing.T) {
+	cm := ContextMessage{
+		Role:       RoleTool,
+		Text:       `{"success":true}`,
+		ToolCallID: "call_abc999",
+	}
+	b, err := json.Marshal(cm)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var unmarshaled ContextMessage
+	if err := json.Unmarshal(b, &unmarshaled); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if unmarshaled.Role != RoleTool || unmarshaled.ToolCallID != "call_abc999" {
+		t.Fatalf("unmarshaled = %+v, want role=%q tool_call_id=%q", unmarshaled, RoleTool, "call_abc999")
+	}
+
+	// Optional tool_call_id is omitted when empty
+	cm2 := ContextMessage{Role: RoleUser, Text: "hello"}
+	b2, err := json.Marshal(cm2)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(b2), "tool_call_id") {
+		t.Fatalf("b2 = %s, want tool_call_id omitted", string(b2))
+	}
+}
+

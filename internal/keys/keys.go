@@ -46,8 +46,9 @@ var ProviderRegistryKey = mcontext.NewKey[ProviderRegistry]("provider-registry")
 
 // ChatMessage is one conversation turn supplied as context to a response.
 type ChatMessage struct {
-	Role string
-	Text string
+	Role       string
+	Text       string
+	ToolCallID string
 }
 
 // PresentedTool is one callable of the agent's presented surface: the name

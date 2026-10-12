@@ -198,10 +198,19 @@ type Op struct {
 	Tools   []Tool           `json:"tools,omitempty"`
 }
 
+// Context message roles.
+const (
+	RoleSystem    = "system"
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
+	RoleTool      = "tool"
+)
+
 // ContextMessage is one turn supplied as context to a response.
 type ContextMessage struct {
-	Role string `json:"role,omitempty"`
-	Text string `json:"text"`
+	Role       string `json:"role,omitempty"`
+	Text       string `json:"text"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // Result is the response of an operation.
