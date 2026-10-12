@@ -135,12 +135,12 @@ func (c *Component) Handle(ctx context.Context, req []byte) ([]byte, error) {
 	}
 	line := wake.Line
 	if line == "" {
-		line = describeEvents(wake.Events)
+		line = DescribeEvents(wake.Events)
 	}
 	if line == "" {
 		return []byte{}, nil
 	}
-	result, err := RunTurn(cfg, line, c.deps(cfg, !wake.Private))
+	result, err := RunTurnWake(cfg, wake, c.deps(cfg, !wake.Private))
 	if err != nil {
 		c.emit("agent: " + err.Error() + "\n")
 		return []byte{}, nil

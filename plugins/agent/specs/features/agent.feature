@@ -12,10 +12,15 @@ Feature: Agent — the turn loop
       When a user line wakes the agent
       Then the turn yields exactly one chat.message "hello"
 
-    Scenario: Silence is a legitimate turn
+    Scenario: Silence is a legitimate turn on bus wakes
+      Given an agent whose model stays silent
+      When a bus wake reaches the agent
+      Then the turn yields no message
+
+    Scenario: A user line overrides silence with acknowledgment
       Given an agent whose model stays silent
       When a user line wakes the agent
-      Then the turn yields no message
+      Then the turn yields exactly one chat.message "Acknowledged. Work is in progress."
 
     Scenario: A tool call ends the turn without a message
       Given an agent whose model calls the tool "read"

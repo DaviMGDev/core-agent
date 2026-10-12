@@ -80,19 +80,64 @@ func TestTurnSpeaksOnce(t *testing.T) {
 	}
 }
 
-func TestTurnSilenceSpeaksNothing(t *testing.T) {
+func TestTurnSilenceSpeaksNothingOnEventWake(t *testing.T) {
+	for _, answer := range []Answer{{}, {Silence: true}, {Text: "  "}} {
+		r := &recordingDeps{answer: answer}
+		res, err := RunTurnWake(Config{}, Wake{Events: []Event{{Topic: "job.tick"}}}, r.deps())
+		if err != nil {
+			t.Fatalf("RunTurnWake: %v", err)
+		}
+		if res.Spoke || len(r.published) != 0 {
+			t.Fatalf("answer %+v: result = %+v, published = %v; want silence", answer, res, r.published)
+		}
+		if len(r.appended) != 1 {
+			t.Fatalf("answer %+v: appends = %+v, want the event turn only", answer, r.appended)
+		}
+	}
+}
+
+func TestTurnUserWakeOverridesSilence(t *testing.T) {
 	for _, answer := range []Answer{{}, {Silence: true}, {Text: "  "}} {
 		r := &recordingDeps{answer: answer}
 		res, err := RunTurn(Config{}, "hi", r.deps())
 		if err != nil {
 			t.Fatalf("RunTurn: %v", err)
 		}
-		if res.Spoke || len(r.published) != 0 {
-			t.Fatalf("answer %+v: result = %+v, published = %v; want silence", answer, res, r.published)
+		if !res.Spoke || res.Text == "" {
+			t.Fatalf("answer %+v: result = %+v; want user wake to override silence with acknowledgment", answer, res)
 		}
-		if len(r.appended) != 1 {
-			t.Fatalf("answer %+v: appends = %+v, want the user turn only", answer, r.appended)
+		if len(r.published) != 1 || r.published[0] != res.Text {
+			t.Fatalf("published = %v, want one chat.message with fallback acknowledgment", r.published)
 		}
+		if len(r.appended) != 2 || r.appended[0].Role != "user" || r.appended[1].Role != "assistant" {
+			t.Fatalf("appends = %+v, want user and assistant turns", r.appended)
+		}
+	}
+}
+
+func TestTurnUserWakeToolResultOverridesSilence(t *testing.T) {
+	r := &recordingDeps{
+		answers: []Answer{
+			{Tool: "peep", Args: json.RawMessage(`{"job":"job-1"}`)},
+			{Silence: true},
+		},
+		useExecute: true,
+		executeFn: func(tool string, args json.RawMessage) (any, error) {
+			return map[string]any{"job": "job-1", "state": "running"}, nil
+		},
+	}
+	res, err := RunTurn(Config{}, "call peep", r.deps())
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if !res.Spoke || !strings.Contains(res.Text, "running") {
+		t.Fatalf("result = %+v, want tool result spoken rather than silence", res)
+	}
+	if len(r.published) != 1 {
+		t.Fatalf("published = %v, want 1 published message", r.published)
+	}
+	if len(r.appended) != 2 || r.appended[0].Role != "user" || r.appended[1].Role != "assistant" {
+		t.Fatalf("appends = %+v, want user and assistant turns in history", r.appended)
 	}
 }
 

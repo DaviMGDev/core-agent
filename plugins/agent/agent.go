@@ -185,21 +185,52 @@ func SystemMessage(cfg Config) Message {
 		b.WriteString("Call a tool only when the wake asks for it or you cannot answer otherwise; a brief delegated to you is yours to answer — do not hand it to another agent.\n")
 	}
 	b.WriteString("Do not claim capabilities you were not given, and never assert a result no tool returned.\n")
-	b.WriteString("Wakes arrive for user lines and background job events (ticks, completions, failures, kills), batched by the notification clock; unprompted job tick events indicate work is actively progressing in the background — you MUST answer unprompted job ticks with silence ({}); never re-issue an identical command while a job is running; when a wake needs no action, answer with silence — silence ends the turn with no message.\n")
+	b.WriteString("Wakes arrive for user lines and background job events (ticks, completions, failures, kills), batched by the notification clock; unprompted job tick events indicate work is actively progressing in the background — you MUST answer unprompted job ticks with silence ({}); never re-issue an identical command while a job is running; user lines must always receive a response and never silence; when an unprompted background event wake needs no action, answer with silence — silence ends the turn with no message.\n")
 	b.WriteString("Report tool failures factually — tool, state, and error as observed — without inventing a diagnosis.")
 	return Message{Role: SystemRole, Text: b.String()}
 }
 
-// RunTurn runs one turn from wake to quiescence: append the line, project the
+// DescribeEvents flattens a bus wake into the line the model sees.
+func DescribeEvents(events []Event) string {
+	line := ""
+	for _, e := range events {
+		if line != "" {
+			line += "; "
+		}
+		line += e.Topic
+		if len(e.Payload) > 0 {
+			line += " " + string(e.Payload)
+		}
+	}
+	return line
+}
+
+// RunTurn runs one turn from wake to quiescence for an interactive user line.
+func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
+	return RunTurnWake(cfg, Wake{Line: line}, deps)
+}
+
+// RunTurnWake runs one turn from wake to quiescence: append the turn, project the
 // agent's own context, ask the model with the presented tool surface under
 // the assembled system message, and act on the answer. Synchronous tool calls
 // execute in-turn and update context until the model speaks or goes silent.
 // A tool call that falls back to StartJob ends the turn without a message;
-// the job's completion or a tick wakes the next turn. Silence is a legitimate
-// outcome; at most one chat.message leaves a turn. The system message is
-// assembled per turn — it travels with the request, never into the record.
-func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
+// the job's completion or a tick wakes the next turn. For autonomous event
+// wakes (wake.Line == "" with Events), silence ends the turn without a message.
+// For interactive user turns (wake.Line != ""), silence is rejected/overridden
+// with the tool result or a fallback acknowledgment so user turns are never
+// silently dropped. The system message is assembled per turn — it travels with
+// the request, never into the record.
+func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 	cfg = cfg.Normalized()
+	isUserTurn := wake.Line != ""
+	line := wake.Line
+	if line == "" {
+		line = DescribeEvents(wake.Events)
+	}
+	if line == "" {
+		return TurnResult{}, nil
+	}
 	if err := deps.Append("user", line); err != nil {
 		return TurnResult{}, err
 	}
@@ -215,6 +246,7 @@ func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 	context := append([]Message{SystemMessage(cfg)}, projected...)
 
 	const maxSteps = 10
+	var lastToolResult string
 	for step := 0; step < maxSteps; step++ {
 		answer, err := deps.Respond(line, context, presented)
 		if err != nil {
@@ -232,6 +264,7 @@ func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 				}
 				callText := formatToolCall(answer.Tool, answer.Args)
 				resText := formatToolResult(res, execErr)
+				lastToolResult = resText
 				context = append(context, Message{Role: RoleAssistant, Text: callText, ToolCallID: answer.ToolCallID})
 				context = append(context, Message{Role: RoleTool, Text: resText, ToolCallID: answer.ToolCallID})
 				continue
@@ -246,7 +279,14 @@ func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 			return TurnResult{}, errors.New("agent: no execution path configured for tool call")
 		}
 		if answer.Silence || strings.TrimSpace(answer.Text) == "" {
-			return TurnResult{}, nil
+			if !isUserTurn {
+				return TurnResult{}, nil
+			}
+			if lastToolResult != "" && lastToolResult != "{}" {
+				answer.Text = lastToolResult
+			} else {
+				answer.Text = "Acknowledged. Work is in progress."
+			}
 		}
 		text := strings.TrimSpace(answer.Text)
 		text = strings.ReplaceAll(text, "\r\n", "\n")

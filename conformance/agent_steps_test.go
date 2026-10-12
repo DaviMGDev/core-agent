@@ -59,6 +59,7 @@ func registerAgentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^an agent whose model stays silent$`, stepAgentSilent)
 	sc.Step(`^an agent whose model calls the tool "([^"]*)"$`, stepAgentCallsTool)
 	sc.Step(`^a user line wakes the agent$`, stepAgentWake)
+	sc.Step(`^a bus wake reaches the agent$`, stepAgentBusWake)
 	sc.Step(`^the turn yields exactly one chat\.message "([^"]*)"$`, stepTurnOneMessage)
 	sc.Step(`^the turn yields no message$`, stepTurnNoMessage)
 	sc.Step(`^the turn starts one job for "([^"]*)"$`, stepTurnStartsJob)
@@ -107,6 +108,16 @@ func stepAgentCallsTool(ctx context.Context, tool string) error {
 func stepAgentWake(ctx context.Context) error {
 	w, rec := agentWorld(ctx)
 	res, err := agent.RunTurn(w.agentCfg, "hi", rec.deps(w.agentCfg))
+	if err != nil {
+		return err
+	}
+	w.agentRes = res
+	return nil
+}
+
+func stepAgentBusWake(ctx context.Context) error {
+	w, rec := agentWorld(ctx)
+	res, err := agent.RunTurnWake(w.agentCfg, agent.Wake{Events: []agent.Event{{Topic: "job.tick"}}}, rec.deps(w.agentCfg))
 	if err != nil {
 		return err
 	}

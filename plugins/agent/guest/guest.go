@@ -339,12 +339,12 @@ func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 	}
 	line := wake.Line
 	if line == "" {
-		line = describeEvents(wake.Events)
+		line = agent.DescribeEvents(wake.Events)
 	}
 	if line == "" {
 		return 0
 	}
-	result, err := agent.RunTurn(cfg, line, deps(cfg, !wake.Private))
+	result, err := agent.RunTurnWake(cfg, wake, deps(cfg, !wake.Private))
 	if err != nil {
 		emit("agent: " + err.Error() + "\n")
 		return 0
