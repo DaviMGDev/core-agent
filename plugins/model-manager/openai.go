@@ -80,3 +80,68 @@ func DirectiveFromToolCalls(calls []ToolCall) (text string, ok bool) {
 	}
 	return "", false
 }
+
+// ChatMessage represents one turn in an OpenAI chat completion payload.
+type ChatMessage struct {
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// FormatChatMessages maps internal ContextMessages to OpenAI-compatible ChatMessages,
+// properly formatting tool_calls on assistant turns and correlating tool_call_id on tool turns.
+func FormatChatMessages(messages []ContextMessage) []ChatMessage {
+	msgs := make([]ChatMessage, 0, len(messages))
+	var lastToolCallID string
+	for _, m := range messages {
+		cm := ChatMessage{
+			Role:    m.Role,
+			Content: m.Text,
+		}
+		if m.Role == RoleAssistant {
+			// Check if this assistant message represents a tool call directive.
+			var directive struct {
+				Tool       string          `json:"tool"`
+				Args       json.RawMessage `json:"args,omitempty"`
+				ToolCallID string          `json:"tool_call_id,omitempty"`
+			}
+			if err := json.Unmarshal([]byte(m.Text), &directive); err == nil && directive.Tool != "" {
+				callID := m.ToolCallID
+				if callID == "" {
+					callID = directive.ToolCallID
+				}
+				if callID == "" {
+					callID = "call_" + directive.Tool
+				}
+				lastToolCallID = callID
+				argsStr := string(directive.Args)
+				if argsStr == "" {
+					argsStr = "{}"
+				}
+				cm.Content = ""
+				cm.ToolCalls = []ToolCall{
+					{
+						ID:   callID,
+						Type: "function",
+						Function: struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						}{
+							Name:      directive.Tool,
+							Arguments: argsStr,
+						},
+					},
+				}
+			}
+		} else if m.Role == RoleTool {
+			cm.ToolCallID = m.ToolCallID
+			if cm.ToolCallID == "" && lastToolCallID != "" {
+				cm.ToolCallID = lastToolCallID
+			}
+		}
+		msgs = append(msgs, cm)
+	}
+	return msgs
+}
+

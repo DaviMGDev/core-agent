@@ -192,22 +192,15 @@ func providerFor(model string) (provider, bool) {
 
 type chatRequest struct {
 	Model             string                      `json:"model"`
-	Messages          []chatMessage               `json:"messages"`
+	Messages          []modelmanager.ChatMessage  `json:"messages"`
 	Stream            bool                        `json:"stream"`
 	Tools             []modelmanager.FunctionTool `json:"tools,omitempty"`
 	ParallelToolCalls *bool                       `json:"parallel_tool_calls,omitempty"`
 }
 
-type chatMessage struct {
-	Role       string                  `json:"role"`
-	Content    string                  `json:"content"`
-	ToolCalls  []modelmanager.ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string                  `json:"tool_call_id,omitempty"`
-}
-
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message modelmanager.ChatMessage `json:"message"`
 	} `json:"choices"`
 }
 
@@ -240,10 +233,7 @@ func (caller) Complete(model string, messages []modelmanager.ContextMessage, too
 	if p.Mock {
 		return modelmanager.MockCaller{}.Complete(model, messages, tools)
 	}
-	msgs := make([]chatMessage, 0, len(messages))
-	for _, m := range messages {
-		msgs = append(msgs, chatMessage{Role: m.Role, Content: m.Text, ToolCallID: m.ToolCallID})
-	}
+	msgs := modelmanager.FormatChatMessages(messages)
 	req := chatRequest{Model: model, Messages: msgs, Tools: modelmanager.OpenAITools(tools)}
 	if len(req.Tools) > 0 {
 		f := false

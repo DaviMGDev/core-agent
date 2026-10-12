@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/DaviMGDev/core-agent/internal/link"
+	"github.com/DaviMGDev/core-agent/plugins/agent"
 	"github.com/DaviMGDev/core-agent/plugins/notifications"
 	toolmanager "github.com/DaviMGDev/core-agent/plugins/tool-manager"
 )
@@ -662,5 +663,27 @@ func TestJobStartedCarriesArgsBrief(t *testing.T) {
 	}
 	if job.Detail != "echo hello world" {
 		t.Errorf("job.Detail = %q, want 'echo hello world'", job.Detail)
+	}
+}
+
+func TestDeliverOnFailureEmitsMessageToChat(t *testing.T) {
+	var buf bytes.Buffer
+	f := &linkFrontend{
+		out: &linkWriter{out: &buf},
+		session: &composedSession{
+			agent:       agent.NewComponent(nil, nil, nil),
+			agentConfig: agent.Config{Conversation: "test-chat"},
+			gate:        &sync.Mutex{},
+		},
+	}
+	// Deliver without an active agent handle will fail, but must emit a link.Message so the UI doesn't hang.
+	f.deliver("test-chat", "hello")
+
+	raw := buf.String()
+	if !strings.Contains(raw, `"kind":"failure"`) && !strings.Contains(raw, `"kind":"error"`) {
+		t.Fatalf("expected failure line in output: %s", raw)
+	}
+	if !strings.Contains(raw, `"kind":"message"`) || !strings.Contains(raw, `"chat":"test-chat"`) {
+		t.Fatalf("expected chat message line to resolve turn in output: %s", raw)
 	}
 }

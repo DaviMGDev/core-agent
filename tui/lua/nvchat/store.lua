@@ -204,6 +204,14 @@ local function handle_line(line)
     if h and h.on_error then
       h.on_error(msg.error or "the core refused the peek")
     else
+      if last and pending[last.id] and #pending[last.id] > 0 then
+        local dh = table.remove(pending[last.id], 1)
+        if dh and dh.on_reply then
+          local errMsg = { sender = "assistant", time = now(), body = "Error: " .. (msg.error or "the core refused a request") }
+          table.insert(last.messages, errMsg)
+          dh.on_reply(last, errMsg)
+        end
+      end
       vim.notify("nvchat: " .. (msg.error or "the core refused a request"), vim.log.levels.WARN)
     end
   end

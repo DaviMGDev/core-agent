@@ -49,22 +49,15 @@ func substituteRef(value string, resolve func(name string) (string, bool)) (stri
 
 type chatRequest struct {
 	Model             string         `json:"model"`
-	Messages          []chatMessage  `json:"messages"`
+	Messages          []ChatMessage  `json:"messages"`
 	Stream            bool           `json:"stream"`
 	Tools             []FunctionTool `json:"tools,omitempty"`
 	ParallelToolCalls *bool          `json:"parallel_tool_calls,omitempty"`
 }
 
-type chatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-}
-
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message ChatMessage `json:"message"`
 	} `json:"choices"`
 }
 
@@ -88,10 +81,7 @@ func (c caller) Complete(model string, messages []ContextMessage, tools []Tool) 
 	if p.Mock {
 		return MockCaller{}.Complete(model, messages, tools)
 	}
-	msgs := make([]chatMessage, 0, len(messages))
-	for _, m := range messages {
-		msgs = append(msgs, chatMessage{Role: m.Role, Content: m.Text, ToolCallID: m.ToolCallID})
-	}
+	msgs := FormatChatMessages(messages)
 	req := chatRequest{Model: model, Messages: msgs, Tools: OpenAITools(tools)}
 	if len(req.Tools) > 0 {
 		f := false

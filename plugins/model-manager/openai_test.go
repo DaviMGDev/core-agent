@@ -186,3 +186,38 @@ func TestProviderRequestOmitsToolsWhenEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatChatMessagesCorrelatesAssistantToolCallsWithToolResponses(t *testing.T) {
+	ctx := []ContextMessage{
+		{Role: RoleUser, Text: "peep job-1"},
+		{Role: RoleAssistant, Text: `{"tool":"peep","args":{"job":"job-1"}}`, ToolCallID: "call_abc123"},
+		{Role: RoleTool, Text: `{"state":"running"}`, ToolCallID: ""},
+	}
+	msgs := FormatChatMessages(ctx)
+	if len(msgs) != 3 {
+		t.Fatalf("len(msgs) = %d, want 3", len(msgs))
+	}
+	// Assistant message has tool_calls with ID and function, content is empty, and no tool_call_id
+	ast := msgs[1]
+	if ast.Role != RoleAssistant {
+		t.Fatalf("msgs[1].Role = %q, want assistant", ast.Role)
+	}
+	if len(ast.ToolCalls) != 1 {
+		t.Fatalf("ast.ToolCalls = %+v, want 1 tool call", ast.ToolCalls)
+	}
+	if ast.ToolCalls[0].ID != "call_abc123" || ast.ToolCalls[0].Function.Name != "peep" {
+		t.Fatalf("ast.ToolCalls[0] = %+v, want call_abc123 and peep", ast.ToolCalls[0])
+	}
+	if ast.ToolCallID != "" {
+		t.Fatalf("ast.ToolCallID = %q, want empty for assistant turn", ast.ToolCallID)
+	}
+
+	// Tool message correlates with call_abc123
+	toolMsg := msgs[2]
+	if toolMsg.Role != RoleTool {
+		t.Fatalf("msgs[2].Role = %q, want tool", toolMsg.Role)
+	}
+	if toolMsg.ToolCallID != "call_abc123" {
+		t.Fatalf("toolMsg.ToolCallID = %q, want call_abc123", toolMsg.ToolCallID)
+	}
+}

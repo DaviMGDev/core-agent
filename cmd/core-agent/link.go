@@ -149,6 +149,7 @@ func (f *linkFrontend) deliver(chat, text string) {
 	f.session.gate.Unlock()
 	if err != nil {
 		f.out.line(link.Failure{Kind: link.KindError, Error: err.Error()})
+		f.out.line(link.Message{Kind: link.KindMessage, Chat: chat, Role: "assistant", Text: fmt.Sprintf("Error: %s", err.Error())})
 		return
 	}
 	if answer.Job != "" {
@@ -158,6 +159,8 @@ func (f *linkFrontend) deliver(chat, text string) {
 	}
 	if answer.Text != "" {
 		f.out.line(link.Message{Kind: link.KindMessage, Chat: chat, Role: "assistant", Text: answer.Text})
+	} else if answer.Job == "" {
+		f.out.line(link.Message{Kind: link.KindMessage, Chat: chat, Role: "assistant", Text: "Acknowledged."})
 	}
 }
 

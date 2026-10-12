@@ -323,7 +323,11 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 	for step := 0; step < maxSteps; step++ {
 		answer, err := deps.Respond(line, context, presented)
 		if err != nil {
-			return TurnResult{}, err
+			if lastToolResult != "" && lastToolResult != "{}" {
+				answer = Answer{Text: lastToolResult}
+			} else {
+				return TurnResult{}, err
+			}
 		}
 		if answer.Tool == "" && !answer.Silence && answer.Text != "" {
 			if parsed := ParseAnswer(answer.Text); parsed.Tool != "" || parsed.Silence {
