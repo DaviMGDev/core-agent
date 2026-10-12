@@ -3,7 +3,10 @@
 // the guest owns the exchange itself (MM4).
 package modelmanager
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // FunctionTool is one entry of the OpenAI-compatible tools array.
 type FunctionTool struct {
@@ -53,24 +56,27 @@ type ToolCall struct {
 }
 
 // DirectiveFromToolCalls normalizes a provider's tool_calls answer to the
-// agent's {"tool","args"} directive text: the first call stands, the rest
+// agent's {"tool","args"} directive text: the first valid call stands, the rest
 // drop — one answer, one call. The arguments string embeds as a JSON object;
-// an empty or invalid one is omitted. ok is false when no call is present.
+// an empty or invalid one is omitted. ok is false when no valid call is present.
 func DirectiveFromToolCalls(calls []ToolCall) (text string, ok bool) {
-	if len(calls) == 0 {
-		return "", false
+	for _, call := range calls {
+		if strings.TrimSpace(call.Function.Name) == "" {
+			continue
+		}
+		directive := struct {
+			Tool       string          `json:"tool"`
+			Args       json.RawMessage `json:"args,omitempty"`
+			ToolCallID string          `json:"tool_call_id,omitempty"`
+		}{Tool: call.Function.Name, ToolCallID: call.ID}
+		if args := json.RawMessage(call.Function.Arguments); json.Valid(args) {
+			directive.Args = args
+		}
+		b, err := json.Marshal(directive)
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
 	}
-	directive := struct {
-		Tool       string          `json:"tool"`
-		Args       json.RawMessage `json:"args,omitempty"`
-		ToolCallID string          `json:"tool_call_id,omitempty"`
-	}{Tool: calls[0].Function.Name, ToolCallID: calls[0].ID}
-	if args := json.RawMessage(calls[0].Function.Arguments); json.Valid(args) {
-		directive.Args = args
-	}
-	b, err := json.Marshal(directive)
-	if err != nil {
-		return "", false
-	}
-	return string(b), true
+	return "", false
 }

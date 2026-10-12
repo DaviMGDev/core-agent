@@ -134,6 +134,44 @@ func TestToolCallsTakeTheFirstAndTolerateEmptyArguments(t *testing.T) {
 	}
 }
 
+func TestDirectiveFromToolCallsSafeguardsAgainstMultipleAndMalformedCalls(t *testing.T) {
+	firstBad := ToolCall{ID: "call_0"}
+	secondValid := ToolCall{
+		ID:   "call_1",
+		Type: "function",
+	}
+	secondValid.Function.Name = "bash"
+	secondValid.Function.Arguments = `{"command":"ls"}`
+
+	thirdValid := ToolCall{
+		ID:   "call_2",
+		Type: "function",
+	}
+	thirdValid.Function.Name = "read"
+	thirdValid.Function.Arguments = `{"path":"/a"}`
+
+	text, ok := DirectiveFromToolCalls([]ToolCall{firstBad, secondValid, thirdValid})
+	if !ok {
+		t.Fatal("DirectiveFromToolCalls: expected ok for slice with valid call")
+	}
+	var dir struct {
+		Tool       string          `json:"tool"`
+		Args       json.RawMessage `json:"args"`
+		ToolCallID string          `json:"tool_call_id"`
+	}
+	if err := json.Unmarshal([]byte(text), &dir); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if dir.Tool != "bash" || dir.ToolCallID != "call_1" {
+		t.Fatalf("expected bash with call_1, got tool=%q, id=%q", dir.Tool, dir.ToolCallID)
+	}
+
+	_, ok = DirectiveFromToolCalls([]ToolCall{firstBad})
+	if ok {
+		t.Fatal("DirectiveFromToolCalls: expected ok=false for empty function name")
+	}
+}
+
 func TestProviderRequestOmitsToolsWhenEmpty(t *testing.T) {
 	for _, surface := range [][]Tool{nil, {}} {
 		if got := OpenAITools(surface); got != nil {
