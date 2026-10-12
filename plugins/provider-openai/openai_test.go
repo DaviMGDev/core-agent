@@ -137,6 +137,19 @@ func TestChatRequestSerializesParallelToolCallsFalse(t *testing.T) {
 	if !strings.Contains(payload, `"parallel_tool_calls":false`) {
 		t.Fatalf("payload missing parallel_tool_calls:false: %s", payload)
 	}
+
+	// When ParallelToolCalls is nil, it must be omitted
+	reqNil := ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []ChatMessage{{Role: "user", Content: "test"}},
+	}
+	bNil, err := json.Marshal(reqNil)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(bNil), "parallel_tool_calls") {
+		t.Fatalf("payload should omit parallel_tool_calls when nil: %s", string(bNil))
+	}
 }
 
 func TestChatRequestValidationEnforcesValidNonEmptyRoles(t *testing.T) {

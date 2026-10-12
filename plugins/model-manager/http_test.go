@@ -242,6 +242,15 @@ func TestCallerPassesParallelToolCallsFalseWhenToolsPresent(t *testing.T) {
 	if !strings.Contains(raw, `"parallel_tool_calls":false`) {
 		t.Fatalf("sent body missing parallel_tool_calls:false: %s", raw)
 	}
+
+	// When tools are nil/empty, parallel_tool_calls must be omitted
+	_, err = c.Complete("test-model", []ContextMessage{{Role: RoleUser, Text: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("Complete without tools: %v", err)
+	}
+	if strings.Contains(string(body), "parallel_tool_calls") {
+		t.Fatalf("body should omit parallel_tool_calls when tools are nil: %s", string(body))
+	}
 }
 
 func TestCallerRejectsEmptyOrInvalidMessageRolesBeforeHTTP(t *testing.T) {
