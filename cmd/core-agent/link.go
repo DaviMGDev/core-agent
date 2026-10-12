@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -172,6 +173,10 @@ func (f *linkFrontend) load(chat string) {
 		f.out.line(link.Failure{Kind: link.KindError, Error: err.Error()})
 		return
 	}
+	if len(resp) == 0 {
+		f.out.line(link.Failure{Kind: link.KindError, Error: "core-agent: link: empty response from chat-history"})
+		return
+	}
 	var result chathistory.Result
 	if err := json.Unmarshal(resp, &result); err != nil {
 		f.out.line(link.Failure{Kind: link.KindError, Error: err.Error()})
@@ -257,6 +262,9 @@ func (f *linkFrontend) invoke(wake agent.Wake) (agentAnswer, error) {
 	resp, err := f.session.agent.Handle(f.ctx, req)
 	if err != nil {
 		return agentAnswer{}, err
+	}
+	if len(resp) == 0 {
+		return agentAnswer{}, errors.New("core-agent: link: empty response from agent")
 	}
 	var answer agentAnswer
 	if err := json.Unmarshal(resp, &answer); err != nil {

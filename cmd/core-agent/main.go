@@ -446,6 +446,9 @@ func invokeTerminal(ctx context.Context, comp *replchat.Component, wake replchat
 	if err != nil {
 		return replchat.Answer{}, err
 	}
+	if len(resp) == 0 {
+		return replchat.Answer{}, errors.New("core-agent: empty response from terminal")
+	}
 	var answer replchat.Answer
 	if err := json.Unmarshal(resp, &answer); err != nil {
 		return replchat.Answer{}, fmt.Errorf("core-agent: reading terminal answer: %w", err)
