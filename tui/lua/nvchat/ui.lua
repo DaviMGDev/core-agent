@@ -511,9 +511,10 @@ end
 function M.freeze(reason)
   local chat = state.current
   if chat then
+    local store = require("nvchat.store")
     table.insert(chat.messages, {
       sender = "system",
-      time = os.date("%H:%M"),
+      time = store.now(),
       body = "core link lost: " .. tostring(reason),
     })
   end

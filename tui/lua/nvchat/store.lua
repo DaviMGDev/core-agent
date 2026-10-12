@@ -38,9 +38,18 @@ local jobs_handler = nil -- the pending jobs request's handlers
 local peeks = {} -- job id -> the last peek answer
 local pending_peeks = {} -- the peek requests awaiting an answer, oldest first
 
-local function now()
-  return os.date("%H:%M")
+-- now() -> formatted timestamp with milliseconds: HH:MM:SS.mmm
+function M.now()
+  local uv = vim.uv or vim.loop
+  if uv and uv.gettimeofday then
+    local sec, usec = uv.gettimeofday()
+    local ms = math.floor(usec / 1000)
+    return os.date("%H:%M:%S", sec) .. string.format(".%03d", ms)
+  end
+  return os.date("%H:%M:%S")
 end
+
+local now = M.now
 
 -- append adds one message to a chat and marks it the recent chat.
 local function append(chat, sender, body)

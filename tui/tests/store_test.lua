@@ -42,6 +42,10 @@ check(
   "deliver echoes locally before any ack",
   message.body == "hello store" and message.sender == "you" and #chat.messages == 1 and echoed
 )
+check(
+  "message time includes milliseconds",
+  message.time:match("^%d%d:%d%d:%d%d%.%d%d%d$") ~= nil
+)
 vim.wait(60000, function()
   return replied ~= nil
 end, 20)
