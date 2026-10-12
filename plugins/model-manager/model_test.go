@@ -330,3 +330,40 @@ func TestContextMessageSupportsToolRoleAndCallID(t *testing.T) {
 	}
 }
 
+func TestValidateMessagesRejectsEmptyAndInvalidRoles(t *testing.T) {
+	// Valid roles pass
+	valid := []ContextMessage{
+		{Role: RoleSystem, Text: "sys"},
+		{Role: RoleUser, Text: "usr"},
+		{Role: RoleAssistant, Text: "ast"},
+		{Role: RoleTool, Text: "tool"},
+	}
+	if err := ValidateMessages(valid); err != nil {
+		t.Fatalf("ValidateMessages(valid): unexpected error %v", err)
+	}
+
+	// Empty role fails
+	emptyRole := []ContextMessage{{Role: "", Text: "hello"}}
+	if err := ValidateMessages(emptyRole); err == nil || !strings.Contains(err.Error(), "empty role") {
+		t.Fatalf("ValidateMessages(empty): want empty role error, got %v", err)
+	}
+
+	// Whitespace-only role fails
+	whitespaceRole := []ContextMessage{{Role: "   ", Text: "hello"}}
+	if err := ValidateMessages(whitespaceRole); err == nil || !strings.Contains(err.Error(), "empty role") {
+		t.Fatalf("ValidateMessages(whitespace): want empty role error, got %v", err)
+	}
+
+	// Invalid role fails
+	invalidRole := []ContextMessage{{Role: "admin", Text: "hello"}}
+	if err := ValidateMessages(invalidRole); err == nil || !strings.Contains(err.Error(), "invalid role") {
+		t.Fatalf("ValidateMessages(invalid): want invalid role error, got %v", err)
+	}
+
+	// MockCaller rejects invalid message roles
+	_, err := MockCaller{}.Complete("fast", invalidRole, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid role") {
+		t.Fatalf("MockCaller.Complete(invalid): want invalid role error, got %v", err)
+	}
+}
+

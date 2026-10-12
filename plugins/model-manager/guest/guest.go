@@ -230,6 +230,9 @@ type httpResponseDoc struct {
 type caller struct{}
 
 func (caller) Complete(model string, messages []modelmanager.ContextMessage, tools []modelmanager.Tool) (string, error) {
+	if err := modelmanager.ValidateMessages(messages); err != nil {
+		return "", err
+	}
 	p, ok := providerFor(model)
 	if !ok {
 		return "", fmt.Errorf("model-manager: no provider serves model %q", model)

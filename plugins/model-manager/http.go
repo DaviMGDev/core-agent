@@ -78,6 +78,9 @@ type caller struct {
 }
 
 func (c caller) Complete(model string, messages []ContextMessage, tools []Tool) (string, error) {
+	if err := ValidateMessages(messages); err != nil {
+		return "", err
+	}
 	p, ok := c.providers.ProviderFor(model)
 	if !ok {
 		return "", fmt.Errorf("model-manager: no provider serves model %q", model)

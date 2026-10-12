@@ -206,6 +206,29 @@ const (
 	RoleTool      = "tool"
 )
 
+// ValidRole reports whether role is a recognized context message role.
+func ValidRole(role string) bool {
+	switch role {
+	case RoleSystem, RoleUser, RoleAssistant, RoleTool:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateMessages checks that all context messages have valid, non-empty roles.
+func ValidateMessages(messages []ContextMessage) error {
+	for i, m := range messages {
+		if strings.TrimSpace(m.Role) == "" {
+			return fmt.Errorf("model-manager: context message %d has empty role", i)
+		}
+		if !ValidRole(m.Role) {
+			return fmt.Errorf("model-manager: context message %d has invalid role %q", i, m.Role)
+		}
+	}
+	return nil
+}
+
 // ContextMessage is one turn supplied as context to a response.
 type ContextMessage struct {
 	Role       string `json:"role,omitempty"`
@@ -237,6 +260,9 @@ type MockCaller struct{}
 // Complete returns the deterministic mock reply. The mock ignores the tool
 // surface: the text-directive path stays for mock and scripted providers.
 func (MockCaller) Complete(model string, messages []ContextMessage, tools []Tool) (string, error) {
+	if err := ValidateMessages(messages); err != nil {
+		return "", err
+	}
 	text := ""
 	for _, m := range messages {
 		if strings.EqualFold(m.Role, "user") {
@@ -266,6 +292,9 @@ func Apply(r *Registry, op Op, caller Caller) (Result, error) {
 		}
 		return Result{Mode: res.Mode, Models: res.Models}, nil
 	case "respond":
+		if err := ValidateMessages(op.Context); err != nil {
+			return Result{}, err
+		}
 		res, err := r.Resolve(op.Model)
 		if err != nil {
 			return Result{}, err

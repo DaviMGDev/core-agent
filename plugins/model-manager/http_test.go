@@ -244,4 +244,44 @@ func TestCallerPassesParallelToolCallsFalseWhenToolsPresent(t *testing.T) {
 	}
 }
 
+func TestCallerRejectsEmptyOrInvalidMessageRolesBeforeHTTP(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	reg := testProviderRegistry{
+		p: keys.Provider{
+			Name:     "testp",
+			Endpoint: srv.URL,
+			Models:   []string{"test-model"},
+		},
+	}
+	c := caller{
+		providers: reg,
+		client:    &http.Client{Timeout: 5 * time.Second},
+	}
+
+	// Empty role fails without making HTTP request
+	_, err := c.Complete("test-model", []ContextMessage{{Role: "", Text: "hi"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "empty role") {
+		t.Fatalf("Complete(empty role) error = %v, want empty role error", err)
+	}
+	if called {
+		t.Fatal("HTTP request was sent despite empty role")
+	}
+
+	// Invalid role fails without making HTTP request
+	_, err = c.Complete("test-model", []ContextMessage{{Role: "unknown_role", Text: "hi"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid role") {
+		t.Fatalf("Complete(invalid role) error = %v, want invalid role error", err)
+	}
+	if called {
+		t.Fatal("HTTP request was sent despite invalid role")
+	}
+}
+
 
