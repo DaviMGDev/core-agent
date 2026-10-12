@@ -444,3 +444,24 @@ func TestAgentPayloadExceeding16KiBDoesNotFail(t *testing.T) {
 	}
 }
 
+func TestTerminalJobWakeProducesNonEmptyResponse(t *testing.T) {
+	ctx := context.Background()
+	st := composeStack(t, `{"conversation":"main","model":"fast","budget":10}`)
+
+	wake := Wake{
+		Events: []Event{
+			{
+				Topic:   "job.completed",
+				Payload: json.RawMessage(`{"job":"job-1","result":{"exit_code":0,"stdout":"success output"}}`),
+			},
+		},
+	}
+	out := handleWake(t, ctx, st.agent, wake)
+	if out.Text == "" {
+		t.Fatal("handleWake returned empty text on terminal job event wake")
+	}
+	if texts := st.publish.all(); len(texts) != 1 || texts[0] != out.Text {
+		t.Fatalf("published = %v, want exactly out.Text (%q)", texts, out.Text)
+	}
+}
+

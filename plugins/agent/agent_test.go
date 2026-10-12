@@ -83,9 +83,9 @@ func TestTurnSpeaksOnce(t *testing.T) {
 func TestTurnSilenceSpeaksNothingOnEventWake(t *testing.T) {
 	for _, answer := range []Answer{{}, {Silence: true}, {Text: "  "}} {
 		r := &recordingDeps{answer: answer}
-		res, err := RunTurnWake(Config{}, Wake{Events: []Event{{Topic: "job.tick"}}}, r.deps())
-		if err != nil {
-			t.Fatalf("RunTurnWake: %v", err)
+		res, RunErr := RunTurnWake(Config{}, Wake{Events: []Event{{Topic: "job.tick"}}}, r.deps())
+		if RunErr != nil {
+			t.Fatalf("RunTurnWake: %v", RunErr)
 		}
 		if res.Spoke || len(r.published) != 0 {
 			t.Fatalf("answer %+v: result = %+v, published = %v; want silence", answer, res, r.published)
@@ -93,6 +93,63 @@ func TestTurnSilenceSpeaksNothingOnEventWake(t *testing.T) {
 		if len(r.appended) != 1 {
 			t.Fatalf("answer %+v: appends = %+v, want the event turn only", answer, r.appended)
 		}
+	}
+}
+
+func TestTurnTerminalJobEventsOverrideSilence(t *testing.T) {
+	cases := []struct {
+		name     string
+		event    Event
+		expected string
+	}{
+		{
+			name: "job.completed with output",
+			event: Event{
+				Topic:   "job.completed",
+				Payload: json.RawMessage(`{"job":"job-1","result":{"exit_code":0,"stdout":"hello world"}}`),
+			},
+			expected: "Job job-1 completed with exit code 0:\nhello world",
+		},
+		{
+			name: "job.failed with error",
+			event: Event{
+				Topic:   "job.failed",
+				Payload: json.RawMessage(`{"job":"job-2","error":"command failed"}`),
+			},
+			expected: "Job job-2 failed: command failed",
+		},
+		{
+			name: "job.killed",
+			event: Event{
+				Topic:   "job.killed",
+				Payload: json.RawMessage(`{"job":"job-3"}`),
+			},
+			expected: "Job job-3 was killed.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, answer := range []Answer{{}, {Silence: true}, {Text: "   "}} {
+				r := &recordingDeps{answer: answer}
+				res, err := RunTurnWake(Config{}, Wake{Events: []Event{tc.event}}, r.deps())
+				if err != nil {
+					t.Fatalf("RunTurnWake: %v", err)
+				}
+				if !res.Spoke || res.Text == "" {
+					t.Fatalf("answer %+v: expected spoken result, got result=%+v", answer, res)
+				}
+				if res.Text != tc.expected {
+					t.Fatalf("res.Text = %q, want %q", res.Text, tc.expected)
+				}
+				if len(r.published) != 1 || r.published[0] != tc.expected {
+					t.Fatalf("published = %v, want [%q]", r.published, tc.expected)
+				}
+				if len(r.appended) != 2 || r.appended[0].Role != "user" || r.appended[1].Role != "assistant" {
+					t.Fatalf("appends = %+v, want user event and assistant response", r.appended)
+				}
+			}
+		})
 	}
 }
 
@@ -329,6 +386,20 @@ func TestSystemMessageInstructsSilenceOnJobTicksAndNoDuplicates(t *testing.T) {
 		"unprompted job tick",
 		"silence ({})",
 		"never re-issue an identical command",
+	} {
+		if !strings.Contains(msg.Text, phrase) {
+			t.Errorf("SystemMessage missing %q:\n%s", phrase, msg.Text)
+		}
+	}
+}
+
+func TestSystemMessageInstructsReportingOnTerminalJobEvents(t *testing.T) {
+	msg := SystemMessage(Config{})
+	for _, phrase := range []string{
+		"terminal job events",
+		"job.completed",
+		"proactively report",
+		"NEVER answer with silence",
 	} {
 		if !strings.Contains(msg.Text, phrase) {
 			t.Errorf("SystemMessage missing %q:\n%s", phrase, msg.Text)

@@ -257,7 +257,7 @@ func SystemMessage(cfg Config) Message {
 		b.WriteString("Call a tool only when the wake asks for it or you cannot answer otherwise; a brief delegated to you is yours to answer — do not hand it to another agent.\n")
 	}
 	b.WriteString("Do not claim capabilities you were not given, and never assert a result no tool returned.\n")
-	b.WriteString("Wakes arrive for user lines and background job events (ticks, completions, failures, kills), batched by the notification clock; unprompted job tick events indicate work is actively progressing in the background — you MUST answer unprompted job ticks with silence ({}); never re-issue an identical command while a job is running; user lines must always receive a response and never silence; when an unprompted background event wake needs no action, answer with silence — silence ends the turn with no message.\n")
+	b.WriteString("Wakes arrive for user lines and background job events (ticks, completions, failures, kills), batched by the notification clock; unprompted job tick events indicate work is actively progressing in the background — you MUST answer unprompted job ticks with silence ({}); never re-issue an identical command while a job is running; user lines must always receive a response and never silence; on terminal job events (job.completed, job.failed, job.killed), you MUST proactively report the job outcome, status, and output to the user and NEVER answer with silence; only non-actionable intermediate background ticks or background events that need no action answer with silence — silence ends the turn with no message.\n")
 	b.WriteString("To call a tool, emit a single JSON directive {\"tool\": \"<name>\", \"args\": {...}} with no surrounding commentary; execute multiple commands one by one across turns; never invent job IDs, fake statuses, or simulated execution outputs — query active jobs using the peep or jobs tools.\n")
 	b.WriteString("Report tool failures factually — tool, state, and error as observed — without inventing a diagnosis.")
 	return Message{Role: SystemRole, Text: b.String()}
@@ -361,11 +361,13 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 			return TurnResult{}, errors.New("agent: no execution path configured for tool call")
 		}
 		if answer.Silence || strings.TrimSpace(answer.Text) == "" {
-			if !isUserTurn {
+			if !isUserTurn && !hasTerminalJobEvent(wake.Events) {
 				return TurnResult{}, nil
 			}
 			if lastToolResult != "" && lastToolResult != "{}" {
 				answer.Text = lastToolResult
+			} else if !isUserTurn && hasTerminalJobEvent(wake.Events) {
+				answer.Text = fallbackJobEventReport(wake.Events)
 			} else {
 				answer.Text = "Acknowledged. Work is in progress."
 			}
@@ -416,6 +418,77 @@ func formatToolResult(res any, err error) string {
 		return fmt.Sprint(res)
 	}
 	return string(b)
+}
+
+func hasTerminalJobEvent(events []Event) bool {
+	for _, e := range events {
+		switch e.Topic {
+		case "job.completed", "job.failed", "job.killed":
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackJobEventReport(events []Event) string {
+	var parts []string
+	for _, e := range events {
+		switch e.Topic {
+		case "job.completed":
+			var doc struct {
+				Job    string `json:"job"`
+				Result any    `json:"result"`
+			}
+			if err := json.Unmarshal(e.Payload, &doc); err == nil && doc.Job != "" {
+				if m, ok := doc.Result.(map[string]any); ok {
+					msg := fmt.Sprintf("Job %s completed", doc.Job)
+					if ec, hasEC := m["exit_code"]; hasEC {
+						msg += fmt.Sprintf(" with exit code %v", ec)
+					}
+					if out, ok := m["stdout"].(string); ok && strings.TrimSpace(out) != "" {
+						msg += fmt.Sprintf(":\n%s", strings.TrimSpace(out))
+					} else if errStr, ok := m["stderr"].(string); ok && strings.TrimSpace(errStr) != "" {
+						msg += fmt.Sprintf(":\n%s", strings.TrimSpace(errStr))
+					}
+					parts = append(parts, msg)
+					continue
+				} else if s, ok := doc.Result.(string); ok && s != "" {
+					parts = append(parts, fmt.Sprintf("Job %s completed: %s", doc.Job, s))
+					continue
+				}
+				parts = append(parts, fmt.Sprintf("Job %s completed.", doc.Job))
+			} else {
+				parts = append(parts, "Background job completed.")
+			}
+		case "job.failed":
+			var doc struct {
+				Job   string `json:"job"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(e.Payload, &doc); err == nil && doc.Job != "" {
+				if doc.Error != "" {
+					parts = append(parts, fmt.Sprintf("Job %s failed: %s", doc.Job, doc.Error))
+				} else {
+					parts = append(parts, fmt.Sprintf("Job %s failed.", doc.Job))
+				}
+			} else {
+				parts = append(parts, "Background job failed.")
+			}
+		case "job.killed":
+			var doc struct {
+				Job string `json:"job"`
+			}
+			if err := json.Unmarshal(e.Payload, &doc); err == nil && doc.Job != "" {
+				parts = append(parts, fmt.Sprintf("Job %s was killed.", doc.Job))
+			} else {
+				parts = append(parts, "Background job was killed.")
+			}
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
+	}
+	return "Background job finished."
 }
 
 // Present returns the tool surface the model sees this turn: configured tools
