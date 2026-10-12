@@ -259,6 +259,8 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 				if execErr == nil {
 					if doc, ok := res.(map[string]any); ok && (doc["status"] == "started" || doc["status"] == "running") && doc["job"] != nil {
 						jobID, _ := doc["job"].(string)
+						callText := formatToolCallWithJob(answer.Tool, answer.Args, jobID)
+						_ = deps.Append("assistant", callText)
 						return TurnResult{Job: jobID}, nil
 					}
 				}
@@ -274,6 +276,8 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 				if err != nil {
 					return TurnResult{}, err
 				}
+				callText := formatToolCallWithJob(answer.Tool, answer.Args, job)
+				_ = deps.Append("assistant", callText)
 				return TurnResult{Job: job}, nil
 			}
 			return TurnResult{}, errors.New("agent: no execution path configured for tool call")
@@ -302,9 +306,16 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 }
 
 func formatToolCall(tool string, args json.RawMessage) string {
+	return formatToolCallWithJob(tool, args, "")
+}
+
+func formatToolCallWithJob(tool string, args json.RawMessage, jobID string) string {
 	doc := map[string]any{"tool": tool}
 	if len(args) > 0 {
 		doc["args"] = args
+	}
+	if jobID != "" {
+		doc["job"] = jobID
 	}
 	b, err := json.Marshal(doc)
 	if err != nil {

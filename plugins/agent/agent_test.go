@@ -155,6 +155,85 @@ func TestToolCallEndsTheTurnWithoutAMessage(t *testing.T) {
 	}
 }
 
+func TestInFlightBackgroundJobRetainedInContextAcrossUserTurns(t *testing.T) {
+	var history []Message
+	d := Deps{
+		Append: func(role, text string) error {
+			history = append(history, Message{Role: role, Text: text})
+			return nil
+		},
+		Recent: func(n int) ([]Message, error) {
+			return history, nil
+		},
+		Project: func(msgs []Message) ([]Message, error) {
+			return msgs, nil
+		},
+		Publish: func(text string) error {
+			return nil
+		},
+		Execute: func(tool string, args json.RawMessage) (any, error) {
+			if tool == "bash" {
+				return map[string]any{"job": "job-1", "status": "started"}, nil
+			}
+			if tool == "peep" {
+				return map[string]any{"job": "job-1", "state": "running"}, nil
+			}
+			return map[string]any{"status": "ok"}, nil
+		},
+	}
+
+	// Turn 1: user requests sleep 70, model launches bash tool
+	d.Respond = func(text string, context []Message, tools []Tool) (Answer, error) {
+		return Answer{Tool: "bash", Args: json.RawMessage(`{"command":"sleep 70"}`)}, nil
+	}
+	res1, err := RunTurn(Config{}, "call sleep 70", d)
+	if err != nil {
+		t.Fatalf("Turn 1 failed: %v", err)
+	}
+	if res1.Job != "job-1" {
+		t.Fatalf("Turn 1 job = %q, want job-1", res1.Job)
+	}
+
+	// Verify history contains both the user prompt and the assistant job launch
+	if len(history) != 2 || history[0].Role != RoleUser || history[1].Role != RoleAssistant {
+		t.Fatalf("history after Turn 1 = %+v, want user prompt and assistant job launch", history)
+	}
+	if !strings.Contains(history[1].Text, "job-1") || !strings.Contains(history[1].Text, "bash") {
+		t.Fatalf("history[1] = %s, want job-1 and bash recorded", history[1].Text)
+	}
+
+	// Turn 2: user asks to peep, context must receive Turn 1's job launch
+	var turn2Context []Message
+	var step int
+	d.Respond = func(text string, context []Message, tools []Tool) (Answer, error) {
+		turn2Context = context
+		step++
+		if step == 1 {
+			return Answer{Tool: "peep", Args: json.RawMessage(`{"job":"job-1"}`)}, nil
+		}
+		return Answer{Text: "job-1 is still running"}, nil
+	}
+	res2, err := RunTurn(Config{}, "call peep", d)
+	if err != nil {
+		t.Fatalf("Turn 2 failed: %v", err)
+	}
+	if !res2.Spoke || !strings.Contains(res2.Text, "job-1 is still running") {
+		t.Fatalf("Turn 2 result = %+v, want job-1 response", res2)
+	}
+
+	// Verify that Turn 2 context included Turn 1's assistant job launch
+	foundJobInTurn2 := false
+	for _, m := range turn2Context {
+		if m.Role == RoleAssistant && strings.Contains(m.Text, "job-1") {
+			foundJobInTurn2 = true
+			break
+		}
+	}
+	if !foundJobInTurn2 {
+		t.Fatalf("turn2Context did not contain Turn 1's assistant job launch: %+v", turn2Context)
+	}
+}
+
 func TestRenamedCallMapsBackToTheRegistryName(t *testing.T) {
 	r := &recordingDeps{answer: Answer{Tool: "delegate", Args: json.RawMessage(`{"brief":"sum"}`)}}
 	cfg := Config{
