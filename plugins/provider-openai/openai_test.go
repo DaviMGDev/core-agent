@@ -139,4 +139,37 @@ func TestChatRequestSerializesParallelToolCallsFalse(t *testing.T) {
 	}
 }
 
+func TestChatRequestValidationEnforcesValidNonEmptyRoles(t *testing.T) {
+	req := ChatRequest{
+		Model: "gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "system", Content: "instruction"},
+			{Role: "user", Content: "query"},
+			{Role: "assistant", Content: "calling tool"},
+			{Role: "tool", Content: `{"result":true}`, ToolCallID: "call_1"},
+		},
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate(valid): unexpected error %v", err)
+	}
+
+	// Empty role rejected
+	badReqEmpty := ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []ChatMessage{{Role: "", Content: "bad"}},
+	}
+	if err := badReqEmpty.Validate(); err == nil || !strings.Contains(err.Error(), "empty role") {
+		t.Fatalf("Validate(empty): want empty role error, got %v", err)
+	}
+
+	// Invalid role rejected
+	badReqInvalid := ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []ChatMessage{{Role: "moderator", Content: "bad"}},
+	}
+	if err := badReqInvalid.Validate(); err == nil || !strings.Contains(err.Error(), "invalid role") {
+		t.Fatalf("Validate(invalid): want invalid role error, got %v", err)
+	}
+}
+
 

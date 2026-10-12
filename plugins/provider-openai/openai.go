@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Defaults of the registered provider: the public OpenAI endpoint, a
@@ -126,5 +127,26 @@ type ChatRequest struct {
 	Model             string        `json:"model"`
 	Messages          []ChatMessage `json:"messages"`
 	ParallelToolCalls *bool         `json:"parallel_tool_calls,omitempty"`
+}
+
+// ValidRoles is the set of roles permitted by OpenAI wire format.
+var ValidRoles = map[string]bool{
+	"system":    true,
+	"user":      true,
+	"assistant": true,
+	"tool":      true,
+}
+
+// Validate checks that all messages in ChatRequest have non-empty, valid roles.
+func (r ChatRequest) Validate() error {
+	for i, m := range r.Messages {
+		if strings.TrimSpace(m.Role) == "" {
+			return fmt.Errorf("provider-openai: message %d has empty role", i)
+		}
+		if !ValidRoles[m.Role] {
+			return fmt.Errorf("provider-openai: message %d has invalid role %q", i, m.Role)
+		}
+	}
+	return nil
 }
 

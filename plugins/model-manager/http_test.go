@@ -284,4 +284,56 @@ func TestCallerRejectsEmptyOrInvalidMessageRolesBeforeHTTP(t *testing.T) {
 	}
 }
 
+func TestCallerHTTPExchangePayloadRoleCompliance(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"verified"}}]}`)
+	}))
+	defer srv.Close()
+
+	reg := testProviderRegistry{
+		p: keys.Provider{
+			Name:     "testp",
+			Endpoint: srv.URL,
+			Models:   []string{"test-model"},
+		},
+	}
+	c := caller{
+		providers: reg,
+		client:    &http.Client{Timeout: 5 * time.Second},
+	}
+
+	messages := []ContextMessage{
+		{Role: RoleSystem, Text: "system prompt"},
+		{Role: RoleUser, Text: "user line"},
+		{Role: RoleAssistant, Text: "call tool"},
+		{Role: RoleTool, Text: `{"status":"ok"}`, ToolCallID: "call_99"},
+	}
+	res, err := c.Complete("test-model", messages, nil)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if res != "verified" {
+		t.Fatalf("res = %q, want verified", res)
+	}
+
+	var req chatRequest
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("Unmarshal captured body: %v", err)
+	}
+	if len(req.Messages) != 4 {
+		t.Fatalf("expected 4 messages in payload, got %d", len(req.Messages))
+	}
+	for i, m := range req.Messages {
+		if strings.TrimSpace(m.Role) == "" {
+			t.Fatalf("message %d has empty role in HTTP payload: %+v", i, m)
+		}
+		if !ValidRole(m.Role) {
+			t.Fatalf("message %d has invalid role %q in HTTP payload", i, m.Role)
+		}
+	}
+}
+
 
