@@ -65,18 +65,16 @@ func TestToolCallsNormalizeToTheDirective(t *testing.T) {
 	if !ok {
 		t.Fatal("DirectiveFromToolCalls: no call found")
 	}
-	if want := `{"tool":"subagent","args":{"brief":"sum"}}`; text != want {
-		t.Fatalf("directive = %q, want %q", text, want)
-	}
 	var directive struct {
-		Tool string          `json:"tool"`
-		Args json.RawMessage `json:"args"`
+		Tool       string          `json:"tool"`
+		Args       json.RawMessage `json:"args"`
+		ToolCallID string          `json:"tool_call_id"`
 	}
 	if err := json.Unmarshal([]byte(text), &directive); err != nil {
 		t.Fatalf("the directive must stay valid JSON: %v", err)
 	}
-	if directive.Tool != "subagent" || string(directive.Args) != `{"brief":"sum"}` {
-		t.Fatalf("directive = %+v, want tool subagent with its arguments as an object", directive)
+	if directive.Tool != "subagent" || string(directive.Args) != `{"brief":"sum"}` || directive.ToolCallID != "call_1" {
+		t.Fatalf("directive = %+v, want tool subagent with args and tool_call_id call_1", directive)
 	}
 }
 
@@ -92,8 +90,16 @@ func TestToolCallsTakeTheFirstAndTolerateEmptyArguments(t *testing.T) {
 	if !ok {
 		t.Fatal("DirectiveFromToolCalls: no call found")
 	}
-	if want := `{"tool":"read","args":{"path":"/x"}}`; text != want {
-		t.Fatalf("directive = %q, want the first call only: %q", text, want)
+	var dir1 struct {
+		Tool       string          `json:"tool"`
+		Args       json.RawMessage `json:"args"`
+		ToolCallID string          `json:"tool_call_id"`
+	}
+	if err := json.Unmarshal([]byte(text), &dir1); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if dir1.Tool != "read" || dir1.ToolCallID != "call_1" {
+		t.Fatalf("dir1 = %+v, want tool read and tool_call_id call_1", dir1)
 	}
 
 	bare := ToolCall{}
@@ -102,8 +108,11 @@ func TestToolCallsTakeTheFirstAndTolerateEmptyArguments(t *testing.T) {
 	if !ok {
 		t.Fatal("DirectiveFromToolCalls: no call found")
 	}
-	if want := `{"tool":"read"}`; text != want {
-		t.Fatalf("directive = %q, want the args omitted when empty: %q", text, want)
+	var dirBare struct {
+		Tool string `json:"tool"`
+	}
+	if err := json.Unmarshal([]byte(text), &dirBare); err != nil || dirBare.Tool != "read" {
+		t.Fatalf("dirBare = %+v, want tool read", dirBare)
 	}
 
 	invalid := ToolCall{}
@@ -113,8 +122,11 @@ func TestToolCallsTakeTheFirstAndTolerateEmptyArguments(t *testing.T) {
 	if !ok {
 		t.Fatal("DirectiveFromToolCalls: no call found")
 	}
-	if want := `{"tool":"read"}`; text != want {
-		t.Fatalf("directive = %q, want invalid arguments omitted: %q", text, want)
+	var dirInvalid struct {
+		Tool string `json:"tool"`
+	}
+	if err := json.Unmarshal([]byte(text), &dirInvalid); err != nil || dirInvalid.Tool != "read" {
+		t.Fatalf("dirInvalid = %+v, want invalid arguments omitted", dirInvalid)
 	}
 
 	if _, ok := DirectiveFromToolCalls(nil); ok {

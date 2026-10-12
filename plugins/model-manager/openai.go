@@ -61,9 +61,10 @@ func DirectiveFromToolCalls(calls []ToolCall) (text string, ok bool) {
 		return "", false
 	}
 	directive := struct {
-		Tool string          `json:"tool"`
-		Args json.RawMessage `json:"args,omitempty"`
-	}{Tool: calls[0].Function.Name}
+		Tool       string          `json:"tool"`
+		Args       json.RawMessage `json:"args,omitempty"`
+		ToolCallID string          `json:"tool_call_id,omitempty"`
+	}{Tool: calls[0].Function.Name, ToolCallID: calls[0].ID}
 	if args := json.RawMessage(calls[0].Function.Arguments); json.Valid(args) {
 		directive.Args = args
 	}
