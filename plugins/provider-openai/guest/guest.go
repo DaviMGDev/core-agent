@@ -19,7 +19,8 @@ import (
 const (
 	effectID    = 1
 	registryKey = "provider-registry"
-	responseCap = 4096
+	// responseCap bounds the provider registration response buffer.
+	responseCap = 65536
 )
 
 //go:wasmimport memento declare_inject

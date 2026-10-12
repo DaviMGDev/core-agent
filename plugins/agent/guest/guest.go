@@ -22,7 +22,9 @@ const (
 	historyKey  = "chat-history"
 	contextKey  = "llm-context"
 	modelKey    = "model-registry"
-	responseCap = 16384
+	// responseCap is the caller's buffer cap; oversized responses return
+	// a structured error naming the limit instead of an empty body.
+	responseCap = 65536
 )
 
 var injectKeys = []string{"chat-history", "model-registry", "llm-context"}
@@ -354,7 +356,16 @@ func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 		}
 	}
 	b, err := json.Marshal(out)
-	if err != nil || uint32(len(b)) > respMax {
+	if err != nil {
+		emit("agent: " + err.Error() + "\n")
+		return 0
+	}
+	if uint32(len(b)) > respMax {
+		errDoc := []byte(fmt.Sprintf(`{"error":"response oversize: %d bytes exceeds cap %d"}`, len(b), respMax))
+		if uint32(len(errDoc)) <= respMax {
+			copy(byteSlice(respPtr, respMax), errDoc)
+			return uint32(len(errDoc))
+		}
 		return 0
 	}
 	copy(byteSlice(respPtr, respMax), b)

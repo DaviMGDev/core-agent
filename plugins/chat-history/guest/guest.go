@@ -8,6 +8,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"unsafe"
 
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
@@ -136,7 +137,15 @@ func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 		return 0
 	}
 	out, err := json.Marshal(result)
-	if err != nil || uint32(len(out)) > respMax {
+	if err != nil {
+		return 0
+	}
+	if uint32(len(out)) > respMax {
+		errDoc := []byte(fmt.Sprintf(`{"error":"response oversize: %d bytes exceeds cap %d"}`, len(out), respMax))
+		if uint32(len(errDoc)) <= respMax {
+			copy(byteSlice(respPtr, respMax), errDoc)
+			return uint32(len(errDoc))
+		}
 		return 0
 	}
 	copy(byteSlice(respPtr, respMax), out)

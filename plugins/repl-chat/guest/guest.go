@@ -21,7 +21,8 @@ const (
 	provideKey = "repl"
 
 	agentKey    = "agent-loop"
-	responseCap = 8192
+	// responseCap bounds the agent invocation response buffer.
+	responseCap = 65536
 )
 
 var injectKeys = []string{"agent-loop"}
@@ -184,7 +185,16 @@ func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 		return 0
 	}
 	out, err := json.Marshal(answer)
-	if err != nil || uint32(len(out)) > respMax {
+	if err != nil {
+		emit("repl: " + err.Error() + "\n")
+		return 0
+	}
+	if uint32(len(out)) > respMax {
+		errDoc := []byte(fmt.Sprintf(`{"error":"response oversize: %d bytes exceeds cap %d"}`, len(out), respMax))
+		if uint32(len(errDoc)) <= respMax {
+			copy(byteSlice(respPtr, respMax), errDoc)
+			return uint32(len(errDoc))
+		}
 		return 0
 	}
 	copy(byteSlice(respPtr, respMax), out)
