@@ -191,7 +191,7 @@ func (c *Component) deps(cfg Config, publish bool) Deps {
 			_ = text
 			msgs := make([]keys.ChatMessage, 0, len(context))
 			for _, m := range context {
-				msgs = append(msgs, keys.ChatMessage{Role: m.Role, Text: m.Text})
+				msgs = append(msgs, keys.ChatMessage{Role: m.Role, Text: m.Text, ToolCallID: m.ToolCallID})
 			}
 			surface := make([]keys.PresentedTool, 0, len(tools))
 			for _, t := range tools {

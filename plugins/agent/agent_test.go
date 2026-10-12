@@ -227,6 +227,26 @@ func TestParseAnswer(t *testing.T) {
 	}
 }
 
+func TestConversationalJSONIsNotHijackedAsDirective(t *testing.T) {
+	cases := []string{
+		`Here is a tool configuration: {"tool":"read","args":{"path":"/tmp"}}`,
+		`To silence the agent, output {"silence": true} in your response.`,
+		"```json\n{\"tool\": \"bash\", \"args\": {\"command\": \"ls\"}}\n```",
+		`{"tool": "custom-tool", "description": "A tool configuration object", "enabled": true}`,
+		`{"text": "I can run the tool for you", "tool": "read"}`,
+		`{"silence": true, "note": "explaining silence syntax"}`,
+	}
+	for _, text := range cases {
+		ans := ParseAnswer(text)
+		if ans.Tool != "" || ans.Silence {
+			t.Fatalf("ParseAnswer(%q) was hijacked as directive: %+v", text, ans)
+		}
+		if ans.Text != text {
+			t.Fatalf("ParseAnswer(%q).Text = %q, want original text preserved", text, ans.Text)
+		}
+	}
+}
+
 func TestPresentNeverInventsAndProjects(t *testing.T) {
 	cfg := Config{
 		Tools:   []Tool{{Name: "read"}, {Name: "write"}, {Name: "bash"}},
@@ -306,8 +326,8 @@ func TestTurnExecutesToolSynchronouslyInTurn(t *testing.T) {
 		t.Fatalf("responded context length = %d, want at least 3", len(r.responded))
 	}
 	lastContext := r.responded[len(r.responded)-1]
-	if lastContext.Role != "user" || !strings.Contains(lastContext.Text, `"sum":5`) {
-		t.Fatalf("last context item = %+v, want tool result containing sum:5", lastContext)
+	if lastContext.Role != RoleTool || !strings.Contains(lastContext.Text, `"sum":5`) {
+		t.Fatalf("last context item = %+v, want tool result with RoleTool containing sum:5", lastContext)
 	}
 }
 
@@ -336,4 +356,61 @@ func TestTurnExecutesMultipleToolsInSameTurn(t *testing.T) {
 		t.Fatalf("published = %v, want ['both finished']", r.published)
 	}
 }
+
+func TestTurnAppendsToolRoleAndCallID(t *testing.T) {
+	r := &recordingDeps{
+		answers: []Answer{
+			{Tool: "lookup", Args: json.RawMessage(`{"q":"status"}`), ToolCallID: "call_abc123"},
+			{Text: "status is active"},
+		},
+		executeFn: func(tool string, args json.RawMessage) (any, error) {
+			return map[string]string{"result": "active"}, nil
+		},
+	}
+	_, err := RunTurn(Config{}, "check status", r.deps())
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(r.responded) < 3 {
+		t.Fatalf("responded context length = %d, want >= 3", len(r.responded))
+	}
+	assistantMsg := r.responded[len(r.responded)-2]
+	if assistantMsg.Role != RoleAssistant || assistantMsg.ToolCallID != "call_abc123" {
+		t.Fatalf("assistantMsg = %+v, want role=assistant tool_call_id=call_abc123", assistantMsg)
+	}
+	toolMsg := r.responded[len(r.responded)-1]
+	if toolMsg.Role != RoleTool || toolMsg.ToolCallID != "call_abc123" {
+		t.Fatalf("toolMsg = %+v, want role=tool tool_call_id=call_abc123", toolMsg)
+	}
+}
+
+func TestMessageSupportsToolRoleAndCallID(t *testing.T) {
+	m := Message{
+		Role:       RoleTool,
+		Text:       `{"status":"ok"}`,
+		ToolCallID: "call_123",
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var unmarshaled Message
+	if err := json.Unmarshal(b, &unmarshaled); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if unmarshaled.Role != RoleTool || unmarshaled.ToolCallID != "call_123" {
+		t.Fatalf("unmarshaled = %+v, want role=%q tool_call_id=%q", unmarshaled, RoleTool, "call_123")
+	}
+
+	// Optional tool_call_id is omitted when empty
+	m2 := Message{Role: RoleUser, Text: "hi"}
+	b2, err := json.Marshal(m2)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(b2), "tool_call_id") {
+		t.Fatalf("b2 = %s, want tool_call_id omitted", string(b2))
+	}
+}
+
 

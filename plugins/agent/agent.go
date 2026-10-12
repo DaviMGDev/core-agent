@@ -54,9 +54,17 @@ func (c Config) Normalized() Config {
 
 // Message is one conversation turn.
 type Message struct {
-	Role string `json:"role,omitempty"`
-	Text string `json:"text"`
+	Role       string `json:"role,omitempty"`
+	Text       string `json:"text"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
+
+// Conversation roles.
+const (
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
+	RoleTool      = "tool"
+)
 
 // Wake is one host call into the agent: a user line, or the events a bus wake
 // carries. Config overrides the activation configuration for this wake only —
@@ -82,20 +90,47 @@ type Event struct {
 // answer whose text parses as a JSON directive carries the tool call; any
 // other text is speech.
 type Answer struct {
-	Text    string          `json:"text,omitempty"`
-	Tool    string          `json:"tool,omitempty"`
-	Args    json.RawMessage `json:"args,omitempty"`
-	Silence bool            `json:"silence,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	Tool       string          `json:"tool,omitempty"`
+	Args       json.RawMessage `json:"args,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Silence    bool            `json:"silence,omitempty"`
 }
 
-// ParseAnswer interprets one model answer: a JSON object with tool/silence
-// fields is a directive; anything else is speech.
+// ParseAnswer interprets one model answer: a strict JSON directive with only
+// tool/args/tool_call_id or silence fields is a directive; anything else (including
+// assistant speech that embeds JSON or carries conversational fields) is speech.
 func ParseAnswer(text string) Answer {
 	trimmed := strings.TrimSpace(text)
-	if strings.HasPrefix(trimmed, "{") {
-		var a Answer
-		if err := json.Unmarshal([]byte(trimmed), &a); err == nil && (a.Tool != "" || a.Silence) {
-			return a
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
+			if _, hasText := raw["text"]; hasText {
+				return Answer{Text: text}
+			}
+			if _, hasContent := raw["content"]; hasContent {
+				return Answer{Text: text}
+			}
+			if _, hasMessage := raw["message"]; hasMessage {
+				return Answer{Text: text}
+			}
+			validDirective := true
+			for k := range raw {
+				switch k {
+				case "tool", "args", "tool_call_id", "silence":
+				default:
+					validDirective = false
+				}
+			}
+			if validDirective {
+				if len(raw) == 0 {
+					return Answer{Silence: true}
+				}
+				var a Answer
+				if err := json.Unmarshal([]byte(trimmed), &a); err == nil && (a.Tool != "" || a.Silence) {
+					return a
+				}
+			}
 		}
 	}
 	return Answer{Text: text}
@@ -197,8 +232,8 @@ func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 				}
 				callText := formatToolCall(answer.Tool, answer.Args)
 				resText := formatToolResult(res, execErr)
-				context = append(context, Message{Role: "assistant", Text: callText})
-				context = append(context, Message{Role: "user", Text: resText})
+				context = append(context, Message{Role: RoleAssistant, Text: callText, ToolCallID: answer.ToolCallID})
+				context = append(context, Message{Role: RoleTool, Text: resText, ToolCallID: answer.ToolCallID})
 				continue
 			}
 			if deps.StartJob != nil {

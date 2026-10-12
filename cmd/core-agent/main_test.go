@@ -35,7 +35,7 @@ func lastUserMessage(body []byte) string {
 		return ""
 	}
 	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == "user" {
+		if req.Messages[i].Role == "user" || req.Messages[i].Role == "tool" {
 			return req.Messages[i].Content
 		}
 	}
