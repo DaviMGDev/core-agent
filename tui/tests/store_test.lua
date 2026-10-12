@@ -75,6 +75,26 @@ check(
   a_turns[1].body == "hello store" and b_turns[1].body == "name b"
 )
 
+-- 3.5: subsequent user messages queue pending callbacks rather than overwriting pending[chat.id].
+local queue_chat = store.create()
+local reply1, reply2 = nil, nil
+store.deliver(queue_chat, "first turn", {
+  on_reply = function(_, r)
+    reply1 = r
+  end,
+})
+store.deliver(queue_chat, "second turn", {
+  on_reply = function(_, r)
+    reply2 = r
+  end,
+})
+vim.wait(60000, function()
+  return reply1 ~= nil and reply2 ~= nil
+end, 20)
+check("subsequent user turns both receive their respective replies via queued handlers", reply1 ~= nil and reply2 ~= nil)
+check("reply1 received first turn response", reply1 ~= nil and reply1.body:find("first turn", 1, true) ~= nil)
+check("reply2 received second turn response", reply2 ~= nil and reply2.body:find("second turn", 1, true) ~= nil)
+
 -- 3.6: the read-only job queries. The mock launch has no jobs, so the
 -- core answers an empty list; the tree builder is checked on scripted rows,
 -- and an unknown peek answers a factual error.

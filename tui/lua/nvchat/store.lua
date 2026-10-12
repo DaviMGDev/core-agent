@@ -32,7 +32,7 @@ local seq = 0 -- id and "Chat N" counter, launch-local
 local job = nil
 local stopping = false
 local stdout_buf = "" -- partial line carried across callbacks
-local pending = {} -- chat id -> the last deliver's handlers
+local pending = {} -- chat id -> queue of deliver handlers ({on_reply = ...})
 local jobs = {} -- the last jobs answer, flat and in creation order
 local jobs_handler = nil -- the pending jobs request's handlers
 local peeks = {} -- job id -> the last peek answer
@@ -119,7 +119,11 @@ local function handle_line(line)
       local message = { sender = "assistant", time = now(), body = msg.text }
       table.insert(chat.messages, message)
       last = chat
-      local h = pending[chat.id]
+      local q = pending[chat.id]
+      local h = nil
+      if q and #q > 0 then
+        h = table.remove(q, 1)
+      end
       if h and h.on_reply then
         h.on_reply(chat, message)
       end
@@ -162,7 +166,8 @@ local function handle_line(line)
         body = body .. " — " .. detail
       end
       append(last, "system", body)
-      local h = pending[last.id]
+      local q = pending[last.id]
+      local h = (q and #q > 0) and q[1] or nil
       if h and h.on_reply then
         h.on_reply(last, last.messages[#last.messages])
       end
@@ -318,7 +323,10 @@ function M.deliver(chat, text, handlers)
   if handlers.on_echo then
     handlers.on_echo(message)
   end
-  pending[chat.id] = handlers
+  if not pending[chat.id] then
+    pending[chat.id] = {}
+  end
+  table.insert(pending[chat.id], handlers)
   last = chat
   send({ kind = "deliver", chat = chat.id, text = text })
   return message
