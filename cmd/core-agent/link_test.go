@@ -426,11 +426,9 @@ func TestRunLinkNeverStreamsTicksAndWritesWholeLines(t *testing.T) {
 		writeLine(t, pw, `{"kind":"deliver","chat":"c`+string(rune('0'+i))+`","text":"turn `+string(rune('0'+i))+`"}`)
 	}
 
-	// Six deliver replies and a tick wake race through the link; the tick
-	// wake is proven by the mock echoing its wake line.
-	waitFor(t, "deliver replies racing a tick wake", func() bool {
-		return strings.Contains(out.String(), "job.tick") &&
-			strings.Count(out.String(), `"kind":"message"`) >= 7
+	// Six deliver replies race through the link without spurious tick wakes.
+	waitFor(t, "deliver replies racing without tick wakes", func() bool {
+		return strings.Count(out.String(), `"kind":"message"`) == 6
 	}, out)
 	for _, j := range pull[link.Job](linkLines(t, out.String())) {
 		if j.Event == "tick" {

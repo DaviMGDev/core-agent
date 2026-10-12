@@ -14,10 +14,10 @@ Feature: context-manager projection
       Then the window keeps ["bbb", "cc"]
       And one message is dropped
 
-    Scenario: The newest message is kept even when oversized
+    Scenario: The newest message is kept and truncated when oversized
       Given a history with messages "old", "very long newest" and budget 4
       When the window is projected
-      Then the window keeps ["very long newest"]
+      Then the window keeps ["very"]
       And one message is dropped
 
     Scenario: Empty history projects an empty window

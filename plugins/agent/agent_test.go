@@ -199,6 +199,19 @@ func TestSystemMessageNamesExactlyThePresentedTools(t *testing.T) {
 	}
 }
 
+func TestSystemMessageInstructsSilenceOnJobTicksAndNoDuplicates(t *testing.T) {
+	msg := SystemMessage(Config{})
+	for _, phrase := range []string{
+		"unprompted job tick",
+		"silence ({})",
+		"never re-issue an identical command",
+	} {
+		if !strings.Contains(msg.Text, phrase) {
+			t.Errorf("SystemMessage missing %q:\n%s", phrase, msg.Text)
+		}
+	}
+}
+
 func TestParseAnswer(t *testing.T) {
 	if a := ParseAnswer(`{"tool":"read"}`); a.Tool != "read" {
 		t.Fatalf("directive = %+v, want tool read", a)

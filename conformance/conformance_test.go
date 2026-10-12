@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -178,7 +179,7 @@ type world struct {
 	bashFIFO       string
 	bashShellPID   int
 	bashChildPID   int
-	bashReminded   bool
+	bashReminded   atomic.Bool
 
 	// shared
 	err error

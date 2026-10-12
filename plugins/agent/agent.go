@@ -150,7 +150,7 @@ func SystemMessage(cfg Config) Message {
 		b.WriteString("Call a tool only when the wake asks for it or you cannot answer otherwise; a brief delegated to you is yours to answer — do not hand it to another agent.\n")
 	}
 	b.WriteString("Do not claim capabilities you were not given, and never assert a result no tool returned.\n")
-	b.WriteString("Wakes arrive for user lines and background job events (ticks, completions, failures, kills), batched by the notification clock; when a wake needs no action, answer with silence — silence ends the turn with no message.\n")
+	b.WriteString("Wakes arrive for user lines and background job events (ticks, completions, failures, kills), batched by the notification clock; unprompted job tick events indicate work is actively progressing in the background — you MUST answer unprompted job ticks with silence ({}); never re-issue an identical command while a job is running; when a wake needs no action, answer with silence — silence ends the turn with no message.\n")
 	b.WriteString("Report tool failures factually — tool, state, and error as observed — without inventing a diagnosis.")
 	return Message{Role: SystemRole, Text: b.String()}
 }
@@ -190,7 +190,7 @@ func RunTurn(cfg Config, line string, deps Deps) (TurnResult, error) {
 				targetTool := resolveCall(cfg, answer.Tool)
 				res, execErr := deps.Execute(targetTool, answer.Args)
 				if execErr == nil {
-					if doc, ok := res.(map[string]any); ok && doc["status"] == "started" && doc["job"] != nil {
+					if doc, ok := res.(map[string]any); ok && (doc["status"] == "started" || doc["status"] == "running") && doc["job"] != nil {
 						jobID, _ := doc["job"].(string)
 						return TurnResult{Job: jobID}, nil
 					}

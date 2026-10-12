@@ -161,3 +161,38 @@ func TestLinkStreamsImmediatelyAndWakesOnTheClock(t *testing.T) {
 		}
 	}
 }
+
+// TestJobTicksDoNotWakeAgent proves intermediate job ticks do not trigger
+// agent wakes, preventing duplicate command execution loops (#29).
+func TestJobTicksDoNotWakeAgent(t *testing.T) {
+	for _, topic := range jobWakeTopics {
+		if topic == notifications.TopicJobTick {
+			t.Errorf("jobWakeTopics contains %s, want ticks excluded from agent wakes", topic)
+		}
+	}
+	for _, topic := range linkWakeTopics {
+		if topic == notifications.TopicJobTick {
+			t.Errorf("linkWakeTopics contains %s, want ticks excluded from link agent wakes", topic)
+		}
+	}
+
+	clock := newManualClock()
+	s := clockedSession(t, clock)
+	s.attachAgentWaker(io.Discard)
+	seen := &messageCollector{}
+	s.bus.Subscribe(notifications.TopicChatMessage, seen)
+
+	// Publish a job tick; even with clock boundary, no wake should occur.
+	s.bus.Publish(notifications.TopicJobTick, []byte(`{"job":"job-1","elapsed_ms":30000}`))
+	clock.fire()
+
+	time.Sleep(50 * time.Millisecond)
+	if texts := seen.snapshot(); len(texts) != 0 {
+		t.Fatalf("job tick caused agent message %v, want no wake on ticks", texts)
+	}
+
+	// Completion event wakes the agent on clock boundary as expected.
+	s.bus.Publish(notifications.TopicJobCompleted, []byte(`{"job":"job-1","result":"done"}`))
+	clock.fire()
+	waitUntil(t, "completion wake", func() bool { return len(seen.snapshot()) == 1 })
+}

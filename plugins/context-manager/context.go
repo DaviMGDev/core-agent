@@ -12,6 +12,9 @@ import (
 // DefaultBudget is the guest's budget when the payload leaves it unset.
 const DefaultBudget = 4096
 
+// TruncationMarker is appended when an oversized newest message is truncated to fit the budget.
+const TruncationMarker = "...[truncated]"
+
 // Message is one turn in the window.
 type Message struct {
 	Role string `json:"role"`
@@ -30,7 +33,9 @@ type Window struct {
 
 // Project keeps the newest messages that fit budget — counted in runes of
 // message text — and always keeps the newest message, even when it alone
-// exceeds the budget. Kept messages preserve append order.
+// exceeds the budget. Kept messages preserve append order. When older
+// messages are pruned to fit budget, any leading assistant turn is dropped
+// so index 0 maintains user-first head alignment.
 func Project(history []Message, budget int) Window {
 	w := Window{Budget: budget}
 	if len(history) == 0 {
@@ -42,6 +47,16 @@ func Project(history []Message, budget int) Window {
 		m := history[i]
 		cost := len([]rune(m.Text))
 		if len(kept) == 0 {
+			if budget > 0 && cost > budget {
+				runes := []rune(m.Text)
+				markerRunes := []rune(TruncationMarker)
+				if budget > len(markerRunes) {
+					m.Text = string(runes[:budget-len(markerRunes)]) + TruncationMarker
+				} else {
+					m.Text = string(runes[:budget])
+				}
+				cost = len([]rune(m.Text))
+			}
 			kept = append(kept, m)
 			total += cost
 			continue
@@ -54,6 +69,11 @@ func Project(history []Message, budget int) Window {
 	}
 	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
 		kept[i], kept[j] = kept[j], kept[i]
+	}
+	if len(kept) < len(history) {
+		for len(kept) > 0 && kept[0].Role == "assistant" {
+			kept = kept[1:]
+		}
 	}
 	w.Messages = kept
 	w.Dropped = len(history) - len(kept)

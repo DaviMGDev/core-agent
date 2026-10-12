@@ -28,9 +28,9 @@ var linkStreamTopics = []string{
 
 // linkWakeTopics are the job events that wake the agent through the
 // notification clock. A start is absent: the turn that started the job just
-// ended. Ticks wake the agent without crossing the link.
+// ended. Intermediate ticks do not wake the agent; only final transitions wake
+// the turn loop.
 var linkWakeTopics = []string{
-	notifications.TopicJobTick,
 	notifications.TopicJobCompleted,
 	notifications.TopicJobFailed,
 	notifications.TopicJobKilled,

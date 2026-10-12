@@ -388,9 +388,9 @@ func agentPayload(raw string, registry *toolmanager.Registry) (string, error) {
 }
 
 // jobWakeTopics are the job events that wake the top-level agent. A start is
-// not among them: the turn that started the job just ended.
+// not among them: the turn that started the job just ended. Intermediate ticks
+// do not wake the agent; only final transitions wake the turn loop.
 var jobWakeTopics = []string{
-	notifications.TopicJobTick,
 	notifications.TopicJobCompleted,
 	notifications.TopicJobFailed,
 	notifications.TopicJobKilled,

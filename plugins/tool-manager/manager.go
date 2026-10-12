@@ -1,6 +1,7 @@
 package tool_manager
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -106,6 +107,9 @@ func (m *Manager) ExecuteCaller(ctx context.Context, caller *runtime.Instance, p
 		return nil, fmt.Errorf("unknown tool %q", toolName)
 	}
 	if t.Background {
+		if existing := m.findActiveJob(toolName, args, parent); existing != nil {
+			return map[string]any{"job": existing.ID(), "status": "running"}, nil
+		}
 		job := m.start(toolName, args, 0, caller, parent)
 		return map[string]any{"job": job.ID(), "status": "started"}, nil
 	}
@@ -117,6 +121,29 @@ func (m *Manager) ExecuteCaller(ctx context.Context, caller *runtime.Instance, p
 		out.job = parent
 	}
 	return t.Run(ctx, args, out)
+}
+
+// FindActiveJob returns an existing active job (queued or running) matching
+// the given tool and arguments, or nil if none is currently active.
+func (m *Manager) FindActiveJob(tool string, args json.RawMessage) *Job {
+	return m.findActiveJob(tool, args, nil)
+}
+
+func (m *Manager) findActiveJob(tool string, args json.RawMessage, parent *Job) *Job {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, j := range m.order {
+		j.mu.Lock()
+		active := j.state == StateQueued || j.state == StateRunning
+		sameTool := j.tool == tool
+		sameParent := j.parent == parent
+		sameArgs := bytes.Equal(bytes.TrimSpace(j.args), bytes.TrimSpace(args))
+		j.mu.Unlock()
+		if active && sameTool && sameParent && sameArgs {
+			return j
+		}
+	}
+	return nil
 }
 
 // Start begins a tool call and returns its job handle at once. An unknown

@@ -24,8 +24,10 @@ so the kernel activates it after history is available.
 - `Project(history, budget)` returns `{messages, dropped, budget}`:
   - newest messages are kept first; older ones are dropped while the running
     text total exceeds the budget;
-  - at least the newest message is always kept, even when it alone exceeds the
-    budget;
+  - at least the newest message is always kept; when it alone exceeds positive
+    budget, it is defensively truncated to the budget limit with a truncation marker;
+  - when older messages are pruned, leading assistant turns are dropped to maintain
+    user-first head alignment;
   - `dropped` counts omitted messages; kept messages keep append order.
 - An empty history projects an empty window with no dropped messages.
 - `budget <= 0` keeps only the newest message.
@@ -67,7 +69,8 @@ chat-history directly; persistence; prompt templates.
 
 - **CM1 — Pure projection.** The window is a function of turns and budget;
   the guest owns the ABI, not the arithmetic.
-- **CM2 — Keep the newest.** A model call must see at least the latest turn;
-  the budget never empties the window.
+- **CM2 — Keep and defensively bound the newest.** A model call must see at
+  least the latest turn, but oversized turns exceeding budget must be defensively
+  truncated to prevent upstream context overflow crashes.
 - **CM3 — Runes now.** A real tokenizer arrives only with a spec that needs
   it; runes are deterministic and sufficient for the first cut.

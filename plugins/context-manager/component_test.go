@@ -53,17 +53,17 @@ func TestComponentProjectsAgainstPayloadBudget(t *testing.T) {
 	}
 
 	// Over budget the oldest drops: a budget-9 window over the same turns
-	// keeps "bbbb" and "cc" (2+4=6 fit) and omits "aaaa" (6+4=10 is
-	// over), reporting one dropped turn. The kernel allows one provider
-	// per key, so the narrower window is asserted on the adapter
-	// directly rather than a second fiber.
+	// would fit "bbbb" and "cc" (2+4=6 fit) while omitting "aaaa" (6+4=10 is over).
+	// Because head alignment requires index 0 to have role "user", the leading
+	// orphan assistant turn "bbbb" is also dropped, keeping only "cc" with role "user"
+	// and reporting two dropped turns.
 	kept, dropped := contextAdapter{budget: 9}.Project([]keys.ChatMessage{
 		{Role: "user", Text: "aaaa"},
 		{Role: "assistant", Text: "bbbb"},
 		{Role: "user", Text: "cc"},
 	})
-	if len(kept) != 2 || kept[0].Text != "bbbb" || kept[1].Text != "cc" || dropped != 1 {
-		t.Fatalf("narrow project = %+v (dropped %d), want [bbbb cc] with one dropped", kept, dropped)
+	if len(kept) != 1 || kept[0].Role != "user" || kept[0].Text != "cc" || dropped != 2 {
+		t.Fatalf("narrow project = %+v (dropped %d), want [cc] with role user and two dropped", kept, dropped)
 	}
 	if got := log.String(); !strings.Contains(got, "context-manager: window ready (budget 10)") {
 		t.Fatalf("log missing the ready line:\n%s", got)

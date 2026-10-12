@@ -455,3 +455,43 @@ func TestExecuteRunsToolSynchronouslyWithoutJob(t *testing.T) {
 	}
 }
 
+func TestExecutePreventsDuplicateRunningJobs(t *testing.T) {
+	m := New(Options{})
+	defer m.Close()
+	release := make(chan struct{})
+	defer close(release)
+
+	if err := m.Registry().Declare(Tool{
+		Name:       "slow-bg",
+		Background: true,
+		Run:        blocking(release),
+	}); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+
+	cmdArgs := json.RawMessage(`{"command":"sleep 60"}`)
+	res1, err := m.Execute(context.Background(), "slow-bg", cmdArgs)
+	if err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	doc1, ok := res1.(map[string]any)
+	if !ok || doc1["status"] != "started" || doc1["job"] != "job-1" {
+		t.Fatalf("first Execute = %+v, want status started, job-1", res1)
+	}
+
+	// Invoking identical command while job-1 is running must return existing job
+	res2, err := m.Execute(context.Background(), "slow-bg", cmdArgs)
+	if err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	doc2, ok := res2.(map[string]any)
+	if !ok || doc2["status"] != "running" || doc2["job"] != "job-1" {
+		t.Fatalf("second Execute = %+v, want status running, job-1", res2)
+	}
+
+	// Verify only 1 job exists in manager
+	if len(m.Jobs()) != 1 {
+		t.Fatalf("len(m.Jobs()) = %d, want 1 (duplicate avoided)", len(m.Jobs()))
+	}
+}
+

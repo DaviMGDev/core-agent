@@ -52,7 +52,7 @@ func declareBash(ctx context.Context, look func(string) (string, error)) error {
 	opts := bash.Options{
 		LookPath: look,
 		OnRemind: func(jobID string, elapsed time.Duration) {
-			w.bashReminded = true
+			w.bashReminded.Store(true)
 		},
 	}
 	if err := m.Registry().Declare(bash.Tool(opts)); err != nil {
@@ -272,7 +272,7 @@ func stepBashReminderFiresWhileRunning(ctx context.Context) error {
 	w := worldFrom(ctx)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if w.bashReminded {
+		if w.bashReminded.Load() {
 			break
 		}
 		if time.Now().After(deadline) {

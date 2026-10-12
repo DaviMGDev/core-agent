@@ -24,6 +24,24 @@ func TestProjectExactFitKeepsAll(t *testing.T) {
 	}
 }
 
+func TestProjectEnforcesUserFirstHeadAlignmentWhenPruned(t *testing.T) {
+	history := []Message{
+		{Role: "user", Text: "aaaa"},
+		{Role: "assistant", Text: "bbbb"},
+		{Role: "user", Text: "cc"},
+	}
+	// Budget 9: "cc" (2) + "bbbb" (4) = 6 fit, "aaaa" (4) exceeds budget.
+	// Without head alignment, "bbbb" (assistant) would be at index 0.
+	// With head alignment, orphan assistant "bbbb" is dropped, leaving ["cc"] with role "user".
+	w := Project(history, 9)
+	if len(w.Messages) != 1 || w.Messages[0].Role != "user" || w.Messages[0].Text != "cc" {
+		t.Fatalf("Project = %+v, want only user message [cc]", w.Messages)
+	}
+	if w.Dropped != 2 {
+		t.Fatalf("Dropped = %d, want 2", w.Dropped)
+	}
+}
+
 func TestProjectOverBudgetDropsOldest(t *testing.T) {
 	history := []Message{{Text: "aaa"}, {Text: "bbb"}, {Text: "cc"}}
 	w := Project(history, 5)
@@ -37,9 +55,26 @@ func TestProjectOverBudgetDropsOldest(t *testing.T) {
 
 func TestProjectKeepsOversizedNewest(t *testing.T) {
 	history := []Message{{Text: "old"}, {Text: "very long newest"}}
+	// Budget 4 is smaller than TruncationMarker (14 runes), so it is defensively clamped to 4 runes.
 	w := Project(history, 4)
-	if got := texts(w.Messages); !reflect.DeepEqual(got, []string{"very long newest"}) {
-		t.Fatalf("Messages = %v, want [very long newest]", got)
+	if got := texts(w.Messages); !reflect.DeepEqual(got, []string{"very"}) {
+		t.Fatalf("Messages = %v, want [very]", got)
+	}
+	if w.Dropped != 1 {
+		t.Fatalf("Dropped = %d, want 1", w.Dropped)
+	}
+}
+
+func TestProjectDefensivelyTruncatesWithMarker(t *testing.T) {
+	history := []Message{{Text: "old"}, {Text: "a very long newest message that overflows"}}
+	// Budget 20: marker is 14 runes, retains 6 runes prefix + "...[truncated]" = 20 runes.
+	w := Project(history, 20)
+	want := "a very" + TruncationMarker
+	if got := texts(w.Messages); !reflect.DeepEqual(got, []string{want}) {
+		t.Fatalf("Messages = %v, want [%s]", got, want)
+	}
+	if len([]rune(w.Messages[0].Text)) != 20 {
+		t.Fatalf("rune length = %d, want 20", len([]rune(w.Messages[0].Text)))
 	}
 	if w.Dropped != 1 {
 		t.Fatalf("Dropped = %d, want 1", w.Dropped)
