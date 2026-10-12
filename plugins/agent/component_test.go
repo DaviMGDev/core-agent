@@ -429,3 +429,18 @@ func waitGone(t *testing.T, sched *runtime.Scheduler, ids ...mcontext.FiberID) {
 	}
 	t.Fatal("timed out waiting for unload")
 }
+
+func TestAgentPayloadExceeding16KiBDoesNotFail(t *testing.T) {
+	ctx := context.Background()
+	st := composeStack(t, `{"conversation":"main","model":"fast","budget":100}`)
+
+	largePrompt := strings.Repeat("hello world ", 2000)
+	out := handleWake(t, ctx, st.agent, Wake{Line: largePrompt})
+	if out.Text == "" {
+		t.Fatal("handleWake returned empty text on large prompt")
+	}
+	if !strings.Contains(out.Text, "mock(fast)") {
+		t.Fatalf("out.Text did not contain mock response")
+	}
+}
+

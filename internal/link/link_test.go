@@ -153,3 +153,28 @@ func TestEncodedKindFields(t *testing.T) {
 		}
 	}
 }
+
+func TestLinkPayloadExceeding16KiBDoesNotFail(t *testing.T) {
+	largeText := strings.Repeat("A quick brown fox jumps over the lazy dog. ", 600)
+	msg := Message{
+		Kind: KindMessage,
+		Chat: "main",
+		Role: "assistant",
+		Text: largeText,
+	}
+	line, err := EncodeLine(msg)
+	if err != nil {
+		t.Fatalf("EncodeLine: %v", err)
+	}
+	if len(line) <= 16384 {
+		t.Fatalf("len(line) = %d, want > 16384", len(line))
+	}
+	var decoded Message
+	if err := json.Unmarshal(line, &decoded); err != nil {
+		t.Fatalf("Unmarshal large payload failed: %v", err)
+	}
+	if decoded.Text != largeText {
+		t.Fatalf("decoded text does not match original")
+	}
+}
+
