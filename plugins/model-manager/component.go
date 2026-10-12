@@ -176,7 +176,7 @@ func (a modelAdapter) Resolve(name string) (keys.ModelResolution, error) {
 func (a modelAdapter) Respond(model string, messages []keys.ChatMessage, tools []keys.PresentedTool) (string, error) {
 	ctx := make([]ContextMessage, 0, len(messages))
 	for _, m := range messages {
-		ctx = append(ctx, ContextMessage{Role: m.Role, Text: m.Text})
+		ctx = append(ctx, ContextMessage{Role: m.Role, Text: m.Text, ToolCallID: m.ToolCallID})
 	}
 	surface := make([]Tool, 0, len(tools))
 	for _, t := range tools {

@@ -48,16 +48,18 @@ func substituteRef(value string, resolve func(name string) (string, bool)) (stri
 }
 
 type chatRequest struct {
-	Model    string         `json:"model"`
-	Messages []chatMessage  `json:"messages"`
-	Stream   bool           `json:"stream"`
-	Tools    []FunctionTool `json:"tools,omitempty"`
+	Model             string         `json:"model"`
+	Messages          []chatMessage  `json:"messages"`
+	Stream            bool           `json:"stream"`
+	Tools             []FunctionTool `json:"tools,omitempty"`
+	ParallelToolCalls *bool          `json:"parallel_tool_calls,omitempty"`
 }
 
 type chatMessage struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 type chatResponse struct {
@@ -85,9 +87,13 @@ func (c caller) Complete(model string, messages []ContextMessage, tools []Tool) 
 	}
 	msgs := make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
-		msgs = append(msgs, chatMessage{Role: m.Role, Content: m.Text})
+		msgs = append(msgs, chatMessage{Role: m.Role, Content: m.Text, ToolCallID: m.ToolCallID})
 	}
 	req := chatRequest{Model: model, Messages: msgs, Tools: OpenAITools(tools)}
+	if len(req.Tools) > 0 {
+		f := false
+		req.ParallelToolCalls = &f
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", err

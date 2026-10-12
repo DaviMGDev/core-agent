@@ -24,7 +24,7 @@ const (
 	// registryKey is the injected provider-registry the provider-for
 	// operation is invoked on; registryRespCap bounds one lookup answer.
 	registryKey     = "provider-registry"
-	registryRespCap = 8192
+	registryRespCap = 65536
 )
 
 var injectKeys = []string{"provider-registry"}
@@ -191,16 +191,18 @@ func providerFor(model string) (provider, bool) {
 }
 
 type chatRequest struct {
-	Model    string                      `json:"model"`
-	Messages []chatMessage               `json:"messages"`
-	Stream   bool                        `json:"stream"`
-	Tools    []modelmanager.FunctionTool `json:"tools,omitempty"`
+	Model             string                      `json:"model"`
+	Messages          []chatMessage               `json:"messages"`
+	Stream            bool                        `json:"stream"`
+	Tools             []modelmanager.FunctionTool `json:"tools,omitempty"`
+	ParallelToolCalls *bool                       `json:"parallel_tool_calls,omitempty"`
 }
 
 type chatMessage struct {
-	Role      string                  `json:"role"`
-	Content   string                  `json:"content"`
-	ToolCalls []modelmanager.ToolCall `json:"tool_calls,omitempty"`
+	Role       string                  `json:"role"`
+	Content    string                  `json:"content"`
+	ToolCalls  []modelmanager.ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string                  `json:"tool_call_id,omitempty"`
 }
 
 type chatResponse struct {
@@ -237,9 +239,13 @@ func (caller) Complete(model string, messages []modelmanager.ContextMessage, too
 	}
 	msgs := make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
-		msgs = append(msgs, chatMessage{Role: m.Role, Content: m.Text})
+		msgs = append(msgs, chatMessage{Role: m.Role, Content: m.Text, ToolCallID: m.ToolCallID})
 	}
 	req := chatRequest{Model: model, Messages: msgs, Tools: modelmanager.OpenAITools(tools)}
+	if len(req.Tools) > 0 {
+		f := false
+		req.ParallelToolCalls = &f
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", err
@@ -337,7 +343,16 @@ func mementoHandle(reqPtr, reqLen, respPtr, respMax uint32) uint32 {
 		return 0
 	}
 	out, err := json.Marshal(result)
-	if err != nil || uint32(len(out)) > respMax {
+	if err != nil {
+		emit(err.Error() + "\n")
+		return 0
+	}
+	if uint32(len(out)) > respMax {
+		errDoc := []byte(fmt.Sprintf(`{"error":"response oversize: %d bytes exceeds cap %d"}`, len(out), respMax))
+		if uint32(len(errDoc)) <= respMax {
+			copy(byteSlice(respPtr, respMax), errDoc)
+			return uint32(len(errDoc))
+		}
 		return 0
 	}
 	copy(byteSlice(respPtr, respMax), out)

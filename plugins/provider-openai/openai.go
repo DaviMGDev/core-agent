@@ -113,3 +113,18 @@ func (c Config) Present(listDoc []byte) bool {
 	}
 	return false
 }
+
+// ChatMessage represents one turn in an OpenAI chat completion payload.
+type ChatMessage struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// ChatRequest represents an outgoing chat completion request payload.
+type ChatRequest struct {
+	Model             string        `json:"model"`
+	Messages          []ChatMessage `json:"messages"`
+	ParallelToolCalls *bool         `json:"parallel_tool_calls,omitempty"`
+}
+

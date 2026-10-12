@@ -177,3 +177,71 @@ func TestProviderExchangeTransportTimeoutFailsFactually(t *testing.T) {
 		t.Fatalf("Complete error = %q, want provider failed message", err.Error())
 	}
 }
+
+func TestCallerSerializesToolMessageWithCallID(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"}}]}`)
+	}))
+	defer srv.Close()
+
+	reg := testProviderRegistry{
+		p: keys.Provider{
+			Name:     "testp",
+			Endpoint: srv.URL,
+			Models:   []string{"test-model"},
+		},
+	}
+	c := caller{
+		providers: reg,
+		client:    &http.Client{Timeout: 5 * time.Second},
+	}
+	_, err := c.Complete("test-model", []ContextMessage{
+		{Role: RoleUser, Text: "run"},
+		{Role: RoleTool, Text: `{"status":"ok"}`, ToolCallID: "call_abc123"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	raw := string(body)
+	if !strings.Contains(raw, `"role":"tool"`) {
+		t.Fatalf("sent body missing role tool: %s", raw)
+	}
+	if !strings.Contains(raw, `"tool_call_id":"call_abc123"`) {
+		t.Fatalf("sent body missing tool_call_id: %s", raw)
+	}
+}
+
+func TestCallerPassesParallelToolCallsFalseWhenToolsPresent(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	reg := testProviderRegistry{
+		p: keys.Provider{
+			Name:     "testp",
+			Endpoint: srv.URL,
+			Models:   []string{"test-model"},
+		},
+	}
+	c := caller{
+		providers: reg,
+		client:    &http.Client{Timeout: 5 * time.Second},
+	}
+	_, err := c.Complete("test-model", []ContextMessage{{Role: RoleUser, Text: "hi"}}, []Tool{{Name: "bash"}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	raw := string(body)
+	if !strings.Contains(raw, `"parallel_tool_calls":false`) {
+		t.Fatalf("sent body missing parallel_tool_calls:false: %s", raw)
+	}
+}
+
+

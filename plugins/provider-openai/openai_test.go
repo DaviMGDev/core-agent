@@ -99,3 +99,44 @@ func TestPresentDetectsSameNamedEntry(t *testing.T) {
 		t.Fatal("Present = true on invalid JSON, want false")
 	}
 }
+
+func TestChatCompletionPayloadSerializesToolMessageWithCallID(t *testing.T) {
+	req := ChatRequest{
+		Model: "gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "run tool"},
+			{Role: "assistant", Content: ""},
+			{Role: "tool", Content: `{"result":42}`, ToolCallID: "call_123"},
+		},
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	payload := string(b)
+	if !strings.Contains(payload, `"role":"tool"`) {
+		t.Fatalf("payload missing role tool: %s", payload)
+	}
+	if !strings.Contains(payload, `"tool_call_id":"call_123"`) {
+		t.Fatalf("payload missing tool_call_id call_123: %s", payload)
+	}
+}
+
+func TestChatRequestSerializesParallelToolCallsFalse(t *testing.T) {
+	f := false
+	req := ChatRequest{
+		Model:             "gpt-4o",
+		Messages:          []ChatMessage{{Role: "user", Content: "test"}},
+		ParallelToolCalls: &f,
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	payload := string(b)
+	if !strings.Contains(payload, `"parallel_tool_calls":false`) {
+		t.Fatalf("payload missing parallel_tool_calls:false: %s", payload)
+	}
+}
+
+
