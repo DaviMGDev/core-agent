@@ -711,4 +711,57 @@ func TestFreezeJobsSystemPromptOmitsJobTickInstructions(t *testing.T) {
 	}
 }
 
+func TestFreezeJobsHidesJobToolsFromPresentedSurface(t *testing.T) {
+	cfg := Config{
+		FreezeJobs: true,
+		Tools: []Tool{
+			{Name: "bash", Description: "run a command"},
+			{Name: "jobs", Description: "list jobs"},
+			{Name: "peep", Description: "peep job"},
+			{Name: "kill", Description: "kill job"},
+		},
+	}
+	presented := Present(cfg)
+	if len(presented) != 1 || presented[0].Name != "bash" {
+		t.Fatalf("Present() = %+v, want only bash (jobs, peep, kill hidden)", presented)
+	}
+
+	sys := SystemMessage(cfg)
+	if strings.Contains(sys.Text, "jobs:") || strings.Contains(sys.Text, "peep:") || strings.Contains(sys.Text, "kill:") {
+		t.Fatalf("SystemMessage contains job tools: %s", sys.Text)
+	}
+}
+
+func TestFreezeJobsRejectsCallsToJobToolsAsUnknown(t *testing.T) {
+	r := &recordingDeps{
+		answers: []Answer{
+			{Tool: "peep", Args: json.RawMessage(`{"job":"job-1"}`)},
+			{Text: "handled rejection"},
+		},
+	}
+	cfg := Config{
+		FreezeJobs: true,
+		Tools: []Tool{
+			{Name: "bash", Description: "run a command"},
+		},
+	}
+	res, err := RunTurn(cfg, "check job", r.deps())
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "handled rejection" {
+		t.Fatalf("res.Text = %q, want 'handled rejection'", res.Text)
+	}
+	var toolResult string
+	for _, m := range r.responded {
+		if m.Role == RoleTool {
+			toolResult = m.Text
+		}
+	}
+	if !strings.Contains(toolResult, `Error: unknown tool "peep"`) {
+		t.Fatalf("toolResult = %q, want 'Error: unknown tool \"peep\"'", toolResult)
+	}
+}
+
+
 

@@ -343,6 +343,17 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 			}
 		}
 		if answer.Tool != "" {
+			if cfg.FreezeJobs {
+				targetTool := resolveCall(cfg, answer.Tool)
+				if targetTool == "jobs" || targetTool == "peep" || targetTool == "kill" {
+					resText := fmt.Sprintf("Error: unknown tool %q", answer.Tool)
+					callText := formatToolCall(answer.Tool, answer.Args)
+					lastToolResult = resText
+					context = append(context, Message{Role: RoleAssistant, Text: callText, ToolCallID: answer.ToolCallID})
+					context = append(context, Message{Role: RoleTool, Text: resText, ToolCallID: answer.ToolCallID})
+					continue
+				}
+			}
 			if deps.Execute != nil {
 				targetTool := resolveCall(cfg, answer.Tool)
 				res, execErr := deps.Execute(targetTool, answer.Args)
@@ -514,6 +525,13 @@ func Present(cfg Config) []Tool {
 	hidden := make(map[string]bool, len(cfg.Hidden))
 	for _, h := range cfg.Hidden {
 		hidden[h] = true
+	}
+	if cfg.FreezeJobs {
+		// When background jobs are frozen under ADR 0001, job-control tools
+		// must not be presented to the model.
+		hidden["jobs"] = true
+		hidden["peep"] = true
+		hidden["kill"] = true
 	}
 	out := make([]Tool, 0, len(cfg.Tools))
 	for _, t := range cfg.Tools {

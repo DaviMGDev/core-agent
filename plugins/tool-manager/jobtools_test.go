@@ -260,24 +260,9 @@ func TestFrozenJobSystemDisablesJobsAndTicks(t *testing.T) {
 		t.Fatalf("StartJob err = %v, want error mentioning frozen", err)
 	}
 
-	// 3. Job tools report frozen status or error
-	jobsRes, err := m.Execute(context.Background(), JobsToolName, nil)
-	if err != nil {
-		t.Fatalf("Execute jobs when frozen: %v", err)
-	}
-	jobsDoc, ok := jobsRes.(map[string]any)
-	if !ok || jobsDoc["status"] != "frozen" {
-		t.Fatalf("jobsDoc = %+v, want status frozen", jobsDoc)
-	}
-
-	_, err = m.Execute(context.Background(), PeepToolName, json.RawMessage(`{"job":"job-1"}`))
-	if err == nil || !strings.Contains(err.Error(), "frozen") {
-		t.Fatalf("peep err = %v, want error mentioning frozen", err)
-	}
-
-	_, err = m.Execute(context.Background(), KillToolName, json.RawMessage(`{"job":"job-1"}`))
-	if err == nil || !strings.Contains(err.Error(), "frozen") {
-		t.Fatalf("kill err = %v, want error mentioning frozen", err)
+	// 3. Job tools are not exported when frozen (ADR 0001: agent must not know about frozen tools)
+	if tools := JobTools(m); len(tools) != 0 {
+		t.Fatalf("JobTools(m) when frozen returned %d tools, want 0", len(tools))
 	}
 }
 
