@@ -58,6 +58,8 @@ type sessionConfig struct {
 	// clockAfter supplies the clock's boundary channels; nil means
 	// time.After. Tests inject a manual clock.
 	clockAfter func(time.Duration) <-chan time.Time
+	// legacyJobs runs the un-frozen background job subsystem. False by default under ADR 0001.
+	legacyJobs bool
 }
 
 // loadSession resolves the .core/ layer into a session configuration: it
@@ -137,6 +139,7 @@ func main() {
 	nick := flag.String("nick", "", "nickname the REPL announces")
 	mock := flag.Bool("mock", false, "answer with an in-process mock LLM instead of calling a provider")
 	tui := flag.Bool("tui", false, "serve the TUI link (JSON lines) on stdin/stdout instead of the REPL")
+	legacyJobs := flag.Bool("legacy-jobs", false, "run with legacy asynchronous background jobs subsystem")
 	flag.Parse()
 
 	cfg, err := loadSession(*mock, *nick)
@@ -144,6 +147,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "core-agent:", err)
 		os.Exit(1)
 	}
+	cfg.legacyJobs = *legacyJobs
 	ctx := context.Background()
 	if *tui {
 		// Component logs go to stderr: stdout carries link lines only.
@@ -205,7 +209,7 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 	}
 
 	bus := notifications.New(notifications.WithClock(cfg.clock, cfg.clockAfter))
-	manager := toolmanager.New(toolmanager.Options{Publisher: bus})
+	manager := toolmanager.New(toolmanager.Options{Publisher: bus, Frozen: !cfg.legacyJobs})
 	// The gate spans attribution to release for every agent call, so a job
 	// scoped to one turn cannot answer for the next.
 	callGate := &sync.Mutex{}
@@ -260,7 +264,7 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 		}
 	}
 
-	agentPayloadDoc, err := agentPayload(cfg.agent, manager.Registry())
+	agentPayloadDoc, err := agentPayload(cfg.agent, manager.Registry(), !cfg.legacyJobs)
 	if err != nil {
 		return abort(err)
 	}
@@ -359,12 +363,15 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 // layer payload augmented with every tool currently in the registry, schemas
 // included. The entry injects the surface at composition so the top-level
 // agent can call tools natively.
-func agentPayload(raw string, registry *toolmanager.Registry) (string, error) {
+func agentPayload(raw string, registry *toolmanager.Registry, freezeJobs ...bool) (string, error) {
 	var c agent.Config
 	if raw != "" {
 		if err := json.Unmarshal([]byte(raw), &c); err != nil {
 			return "", fmt.Errorf("core-agent: agent payload: %w", err)
 		}
+	}
+	if len(freezeJobs) > 0 && freezeJobs[0] {
+		c.FreezeJobs = true
 	}
 	existing := make(map[string]bool, len(c.Tools))
 	for _, t := range c.Tools {
@@ -400,6 +407,9 @@ var jobWakeTopics = []string{
 // through the notification clock: queued events flush together on each
 // boundary, and a boundary with nothing queued wakes no one.
 func (s *composedSession) attachAgentWaker(log io.Writer) {
+	if s.manager.IsFrozen() {
+		return
+	}
 	for _, topic := range jobWakeTopics {
 		s.bus.SubscribeClocked(topic, agentWaker{ctx: s.ctx, comp: s.agent, log: log, gate: s.gate})
 	}

@@ -253,6 +253,7 @@ func startDrivenLink(t *testing.T) (*io.PipeWriter, *toolmanager.Manager, *trans
 	if err != nil {
 		t.Fatalf("loadSession: %v", err)
 	}
+	cfg.legacyJobs = true
 	return startDrivenLinkWith(t, cfg)
 }
 

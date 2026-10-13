@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/DaviMGDev/core-agent/plugins/agent"
 	"github.com/DaviMGDev/core-agent/plugins/notifications"
@@ -119,7 +120,49 @@ func run(ctx context.Context, loop Agent, jobs Jobs, opts Options, args json.Raw
 	}
 	job := out.Job()
 	if job == nil {
-		return nil, errors.New("subagent: no job")
+		wantConversation := call.Return == "conversation"
+		cfg := agent.Config{
+			Conversation: fmt.Sprintf("subagent-%d", time.Now().UnixNano()),
+			Model:        opts.Model,
+			Budget:       opts.Budget,
+			FreezeJobs:   true,
+		}
+		if call.Model != "" {
+			cfg.Model = call.Model
+		}
+		if call.Budget > 0 {
+			cfg.Budget = call.Budget
+		}
+		if jobs != nil && jobs.Registry() != nil {
+			for _, t := range jobs.Registry().Tools() {
+				if t.Name == ToolName || t.Name == "jobs" || t.Name == "peep" || t.Name == "kill" {
+					continue
+				}
+				cfg.Tools = append(cfg.Tools, agent.Tool{Name: t.Name, Description: t.Description, Parameters: t.Schema})
+			}
+		}
+		req := agent.Wake{Line: call.Brief, Config: &cfg, Dump: wantConversation, Private: true}
+		b, err := json.Marshal(req)
+		if err != nil {
+			return nil, fmt.Errorf("subagent: %w", err)
+		}
+		if opts.Call != nil {
+			opts.Call.Lock()
+			defer opts.Call.Unlock()
+		}
+		resp, err := loop.Handle(ctx, b)
+		if err != nil {
+			return nil, err
+		}
+		var out wakeResponse
+		if err := json.Unmarshal(resp, &out); err != nil {
+			return nil, fmt.Errorf("subagent: reading answer: %w", err)
+		}
+		res := Result{Reply: out.Text}
+		if wantConversation {
+			res.Conversation = out.Conversation
+		}
+		return res, nil
 	}
 	if d := job.Depth(); d > opts.depth() {
 		return nil, fmt.Errorf("subagent: depth %d exceeds the bound %d", d, opts.depth())

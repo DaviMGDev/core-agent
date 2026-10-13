@@ -112,12 +112,13 @@ func sessionFrom(t *testing.T, resolved *config.Config, nick string) sessionConf
 		payloads.Nick = nick
 	}
 	return sessionConfig{
-		nick:      payloads.Nick,
-		providers: payloads.Providers,
-		models:    payloads.Models,
-		history:   payloads.History,
-		context:   payloads.Context,
-		agent:     payloads.Agent,
+		nick:       payloads.Nick,
+		providers:  payloads.Providers,
+		models:     payloads.Models,
+		history:    payloads.History,
+		context:    payloads.Context,
+		agent:      payloads.Agent,
+		legacyJobs: true,
 		credentials: func(name string) (string, bool) {
 			return resolved.Resolve(name, nil)
 		},
@@ -719,6 +720,7 @@ func TestRealGemmaDelegation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadSession: %v", err)
 	}
+	cfg.legacyJobs = true
 	managerReady := make(chan *toolmanager.Manager, 1)
 	cfg.onComposed = func(m *toolmanager.Manager) { managerReady <- m }
 
@@ -773,3 +775,41 @@ func TestRealGemmaDelegation(t *testing.T) {
 		t.Fatalf("runConfig: %v", err)
 	}
 }
+
+func TestDefaultSessionFrozenExcludesJobTools(t *testing.T) {
+	resolved := testResolved(t)
+	cfg := sessionFrom(t, resolved, "tester")
+	cfg.legacyJobs = false // ADR 0001 default
+
+	s, err := composeSession(context.Background(), cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("composeSession: %v", err)
+	}
+	defer s.Close()
+
+	if !s.manager.IsFrozen() {
+		t.Fatalf("expected manager to be frozen")
+	}
+
+	for _, tool := range s.manager.Registry().Tools() {
+		if tool.Name == toolmanager.JobsToolName || tool.Name == toolmanager.PeepToolName || tool.Name == toolmanager.KillToolName {
+			t.Fatalf("unexpected job tool %q in registry when frozen", tool.Name)
+		}
+	}
+
+	presented := agent.Present(s.agentConfig)
+	for _, tool := range presented {
+		if tool.Name == "jobs" || tool.Name == "peep" || tool.Name == "kill" {
+			t.Fatalf("unexpected job tool %q presented to agent when frozen", tool.Name)
+		}
+	}
+
+	sys := agent.SystemMessage(s.agentConfig)
+	if strings.Contains(sys.Text, "jobs:") || strings.Contains(sys.Text, "peep:") || strings.Contains(sys.Text, "kill:") {
+		t.Fatalf("system message contains job tools: %s", sys.Text)
+	}
+	if strings.Contains(sys.Text, "job tick events") {
+		t.Fatalf("system message contains job ticks when frozen: %s", sys.Text)
+	}
+}
+

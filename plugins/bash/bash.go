@@ -78,7 +78,7 @@ func Tool(opts Options) toolmanager.Tool {
 	return toolmanager.Tool{
 		Name:       ToolName,
 		Background: true,
-		Description: "run a shell command as one job and return its factual result — exit code, stdout, stderr. " +
+		Description: "run a shell command and return its factual result — exit code, stdout, stderr. " +
 			"Report only what the process produced; never invent a diagnosis for a failure.",
 		Schema: json.RawMessage(`{"type":"object","properties":{` +
 			`"command":{"type":"string","description":"the shell command to run"},` +
