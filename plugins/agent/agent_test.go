@@ -648,4 +648,67 @@ func TestMessageSupportsToolRoleAndCallID(t *testing.T) {
 	}
 }
 
+func TestFreezeJobsExecutesToolsSynchronouslyWithoutSpawningJob(t *testing.T) {
+	r := &recordingDeps{
+		answers: []Answer{
+			{Tool: "runner", Args: json.RawMessage(`{"cmd":"ls"}`)},
+			{Text: "command output received"},
+		},
+		executeFn: func(tool string, args json.RawMessage) (any, error) {
+			// Even if tool returns job-like document, FreezeJobs ensures it is treated as a normal inline tool result
+			return map[string]any{"status": "started", "job": "job-999", "stdout": "file1.txt"}, nil
+		},
+	}
+	cfg := Config{FreezeJobs: true}
+	res, err := RunTurn(cfg, "run command", r.deps())
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Job != "" {
+		t.Fatalf("res.Job = %q, want empty when FreezeJobs is true", res.Job)
+	}
+	if !res.Spoke || res.Text != "command output received" {
+		t.Fatalf("res = %+v, want Spoke=true Text='command output received'", res)
+	}
+	if len(r.executed) != 1 || r.executed[0] != "runner" {
+		t.Fatalf("executed = %v, want ['runner']", r.executed)
+	}
+}
+
+func TestFreezeJobsRejectsStartJobFallback(t *testing.T) {
+	deps := Deps{
+		Append: func(role, text string) error { return nil },
+		Recent: func(n int) ([]Message, error) { return nil, nil },
+		Project: func(msgs []Message) ([]Message, error) { return msgs, nil },
+		Respond: func(text string, context []Message, tools []Tool) (Answer, error) {
+			return Answer{Tool: "any"}, nil
+		},
+		StartJob: func(tool string, args json.RawMessage) (string, error) {
+			return "job-1", nil
+		},
+	}
+	cfg := Config{FreezeJobs: true}
+	_, err := RunTurn(cfg, "do something", deps)
+	if err == nil {
+		t.Fatalf("RunTurn with FreezeJobs=true and only StartJob should return error")
+	}
+	if !strings.Contains(err.Error(), "background jobs are frozen") {
+		t.Fatalf("err = %q, want 'background jobs are frozen'", err.Error())
+	}
+}
+
+func TestFreezeJobsSystemPromptOmitsJobTickInstructions(t *testing.T) {
+	cfg := Config{FreezeJobs: true}
+	sys := SystemMessage(cfg)
+	if strings.Contains(sys.Text, "job tick events") {
+		t.Fatalf("system message when FreezeJobs=true contains job tick events: %s", sys.Text)
+	}
+	if strings.Contains(sys.Text, "peep or jobs tools") {
+		t.Fatalf("system message when FreezeJobs=true contains peep or jobs tools: %s", sys.Text)
+	}
+	if !strings.Contains(sys.Text, "Tools execute synchronously and blocking within your turn") {
+		t.Fatalf("system message when FreezeJobs=true missing synchronous execution instructions: %s", sys.Text)
+	}
+}
+
 

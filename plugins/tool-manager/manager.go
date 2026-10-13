@@ -48,6 +48,8 @@ type Options struct {
 	DefaultTick time.Duration
 	// Publisher receives job events.
 	Publisher Publisher
+	// Frozen freezes the background job subsystem (ADR 0001).
+	Frozen bool
 }
 
 // Manager owns the tool registry and the jobs. It is host-side (system D14)
@@ -64,6 +66,7 @@ type Manager struct {
 	callers     map[*runtime.Instance][]*Job
 	listeners   map[*Job]*jobListener
 	closed      bool
+	frozen      bool
 	wg          sync.WaitGroup
 }
 
@@ -80,7 +83,24 @@ func New(opts Options) *Manager {
 		publisher:   opts.Publisher,
 		callers:     make(map[*runtime.Instance][]*Job),
 		listeners:   make(map[*Job]*jobListener),
+		frozen:      opts.Frozen,
 	}
+}
+
+// SetFrozen sets whether the background job system is frozen (ADR 0001).
+// When frozen, background job spawning and tick generation are disabled,
+// and tools execute purely synchronously.
+func (m *Manager) SetFrozen(frozen bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.frozen = frozen
+}
+
+// IsFrozen reports whether the background job system is frozen.
+func (m *Manager) IsFrozen() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.frozen
 }
 
 // Registry returns the manager's tool registry.
@@ -106,7 +126,7 @@ func (m *Manager) ExecuteCaller(ctx context.Context, caller *runtime.Instance, p
 	if !ok {
 		return nil, fmt.Errorf("unknown tool %q", toolName)
 	}
-	if t.Background {
+	if t.Background && !m.IsFrozen() {
 		if existing := m.findActiveJob(toolName, args, parent); existing != nil {
 			return map[string]any{"job": existing.ID(), "status": "running"}, nil
 		}
@@ -255,6 +275,9 @@ func (m *Manager) run(job *Job, t Tool) {
 // tickLoop emits job.tick on the job's interval while it runs. A tick is a
 // clock nudge — time passed, peep me — never a health claim.
 func (m *Manager) tickLoop(ctx context.Context, job *Job, done <-chan struct{}) {
+	if m.IsFrozen() {
+		return
+	}
 	ticker := time.NewTicker(job.tick)
 	defer ticker.Stop()
 	for {
@@ -457,6 +480,9 @@ type statusDoc struct {
 // never waits for the call to finish. A job started while the caller's
 // instance is attributed to a parent job is adopted into that job's subtree.
 func (m *Manager) StartJob(caller *runtime.Instance, req []byte) ([]byte, error) {
+	if m.IsFrozen() {
+		return nil, errors.New("job start: background job system is frozen (ADR 0001); use synchronous tool execution")
+	}
 	var r startRequest
 	if err := json.Unmarshal(req, &r); err != nil {
 		return nil, fmt.Errorf("job start: %w", err)

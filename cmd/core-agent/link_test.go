@@ -687,3 +687,47 @@ func TestDeliverOnFailureEmitsMessageToChat(t *testing.T) {
 		t.Fatalf("expected chat message line to resolve turn in output: %s", raw)
 	}
 }
+
+func TestDeliverSynchronousToolExecutionInLink(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		line := lastUserMessage(raw)
+		var answer string
+		if strings.HasPrefix(line, "compute") {
+			// First prompt calls a tool directive
+			answer = `{"tool":"bash","args":{"command":"echo sync_output"}}`
+		} else {
+			// Second prompt (with tool result) produces final text
+			answer = "computation completed: sync_output"
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%q}}]}`, answer)
+	}))
+	defer srv.Close()
+
+	cfg := sessionFrom(t, testResolved(t), "tester")
+	cfg.providers = providerDoc(testProvider{Name: "local", Endpoint: srv.URL, Models: []string{"gemma4:cloud"}})
+	pw, manager, out, _, stop := startDrivenLinkWith(t, cfg)
+	defer stop()
+
+	// Freeze background jobs on the manager
+	manager.SetFrozen(true)
+
+	writeLine(t, pw, `{"kind":"deliver","chat":"sync-chat","text":"compute inline"}`)
+	waitFor(t, "synchronous delivery response on chat", func() bool {
+		for _, m := range pull[link.Message](linkLines(t, out.String())) {
+			if m.Chat == "sync-chat" && strings.Contains(m.Text, "computation completed") {
+				return true
+			}
+		}
+		return false
+	}, out)
+
+	// In synchronous mode, no job events crossed the link
+	for _, j := range pull[link.Job](linkLines(t, out.String())) {
+		if j.Job != "" {
+			t.Fatalf("unexpected job event crossed link during synchronous execution: %+v", j)
+		}
+	}
+}
+

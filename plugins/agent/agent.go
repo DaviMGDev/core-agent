@@ -36,6 +36,9 @@ type Config struct {
 	Tools        []Tool            `json:"tools,omitempty"`
 	Hidden       []string          `json:"hidden,omitempty"`
 	Renamed      map[string]string `json:"renamed,omitempty"`
+	// FreezeJobs pauses the background job subsystem, forcing tools to execute
+	// synchronously within the turn and preventing early turn exits on jobs.
+	FreezeJobs   bool              `json:"freeze_jobs,omitempty"`
 }
 
 // Normalized fills the defaults.
@@ -257,6 +260,11 @@ func SystemMessage(cfg Config) Message {
 		b.WriteString("Call a tool only when the wake asks for it or you cannot answer otherwise; a brief delegated to you is yours to answer — do not hand it to another agent.\n")
 	}
 	b.WriteString("Do not claim capabilities you were not given, and never assert a result no tool returned.\n")
+	if cfg.FreezeJobs {
+		b.WriteString("Tools execute synchronously and blocking within your turn. To call a tool, emit a single JSON directive {\"tool\": \"<name>\", \"args\": {...}} with no surrounding commentary; inspect tool results and continue until producing your answer. User lines must always receive a response and never silence.\n")
+		b.WriteString("Report tool failures factually — tool, state, and error as observed — without inventing a diagnosis.")
+		return Message{Role: SystemRole, Text: b.String()}
+	}
 	b.WriteString("Wakes arrive for user lines and background job events (ticks, completions, failures, kills), batched by the notification clock; unprompted job tick events indicate work is actively progressing in the background — you MUST answer unprompted job ticks with silence ({}); never re-issue an identical command while a job is running; user lines must always receive a response and never silence; on terminal job events (job.completed, job.failed, job.killed), you MUST proactively report the job outcome, status, and output to the user and NEVER answer with silence; only non-actionable intermediate background ticks or background events that need no action answer with silence — silence ends the turn with no message.\n")
 	b.WriteString("To call a tool, emit a single JSON directive {\"tool\": \"<name>\", \"args\": {...}} with no surrounding commentary; execute multiple commands one by one across turns; never invent job IDs, fake statuses, or simulated execution outputs — query active jobs using the peep or jobs tools.\n")
 	b.WriteString("Report tool failures factually — tool, state, and error as observed — without inventing a diagnosis.")
@@ -338,7 +346,7 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 			if deps.Execute != nil {
 				targetTool := resolveCall(cfg, answer.Tool)
 				res, execErr := deps.Execute(targetTool, answer.Args)
-				if execErr == nil {
+				if !cfg.FreezeJobs && execErr == nil {
 					if doc, ok := res.(map[string]any); ok && (doc["status"] == "started" || doc["status"] == "running") && doc["job"] != nil {
 						jobID, _ := doc["job"].(string)
 						callText := formatToolCallWithJob(answer.Tool, answer.Args, jobID)
@@ -353,7 +361,7 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 				context = append(context, Message{Role: RoleTool, Text: resText, ToolCallID: answer.ToolCallID})
 				continue
 			}
-			if deps.StartJob != nil {
+			if !cfg.FreezeJobs && deps.StartJob != nil {
 				job, err := deps.StartJob(resolveCall(cfg, answer.Tool), answer.Args)
 				if err != nil {
 					return TurnResult{}, err
@@ -361,6 +369,9 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 				callText := formatToolCallWithJob(answer.Tool, answer.Args, job)
 				_ = deps.Append("assistant", callText)
 				return TurnResult{Job: job}, nil
+			}
+			if cfg.FreezeJobs {
+				return TurnResult{}, errors.New("agent: background jobs are frozen; synchronous tool execution (deps.Execute) is required")
 			}
 			return TurnResult{}, errors.New("agent: no execution path configured for tool call")
 		}

@@ -223,3 +223,61 @@ func TestJobToolsExecuteSynchronouslyWithoutSpawningJobs(t *testing.T) {
 		t.Fatalf("peep tool allocated a job in manager: count = %d, want 1", len(m.Jobs()))
 	}
 }
+
+func TestFrozenJobSystemDisablesJobsAndTicks(t *testing.T) {
+	pub := &recorder{}
+	m := jobToolSet(t, pub)
+	m.SetFrozen(true)
+
+	// Declare a tool marked Background: true
+	err := m.Registry().Declare(Tool{
+		Name:       "bg_tool",
+		Background: true,
+		Run: func(ctx context.Context, args json.RawMessage, out *Output) (any, error) {
+			return map[string]string{"output": "executed synchronously"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Declare bg_tool: %v", err)
+	}
+
+	// 1. Execute "bg_tool": when frozen, it MUST run synchronously, NOT return {"status":"started","job":...}
+	res, err := m.Execute(context.Background(), "bg_tool", nil)
+	if err != nil {
+		t.Fatalf("Execute bg_tool: %v", err)
+	}
+	resMap, ok := res.(map[string]string)
+	if !ok || resMap["output"] != "executed synchronously" {
+		t.Fatalf("res = %+v, want synchronous output", res)
+	}
+	if pub.count("job.started") != 0 {
+		t.Fatalf("frozen manager spawned job.started event")
+	}
+
+	// 2. StartJob returns an error when frozen
+	_, err = m.StartJob(nil, []byte(`{"tool":"bg_tool"}`))
+	if err == nil || !strings.Contains(err.Error(), "frozen") {
+		t.Fatalf("StartJob err = %v, want error mentioning frozen", err)
+	}
+
+	// 3. Job tools report frozen status or error
+	jobsRes, err := m.Execute(context.Background(), JobsToolName, nil)
+	if err != nil {
+		t.Fatalf("Execute jobs when frozen: %v", err)
+	}
+	jobsDoc, ok := jobsRes.(map[string]any)
+	if !ok || jobsDoc["status"] != "frozen" {
+		t.Fatalf("jobsDoc = %+v, want status frozen", jobsDoc)
+	}
+
+	_, err = m.Execute(context.Background(), PeepToolName, json.RawMessage(`{"job":"job-1"}`))
+	if err == nil || !strings.Contains(err.Error(), "frozen") {
+		t.Fatalf("peep err = %v, want error mentioning frozen", err)
+	}
+
+	_, err = m.Execute(context.Background(), KillToolName, json.RawMessage(`{"job":"job-1"}`))
+	if err == nil || !strings.Contains(err.Error(), "frozen") {
+		t.Fatalf("kill err = %v, want error mentioning frozen", err)
+	}
+}
+

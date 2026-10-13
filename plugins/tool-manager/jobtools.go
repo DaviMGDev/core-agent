@@ -37,18 +37,24 @@ func JobTools(m *Manager) []Tool {
 		{
 			Name: JobsToolName,
 			Description: "list the jobs visible to this agent in creation order: job id, tool, state, and age. " +
-				"Report only what the tool returns.",
+				"Report only what the tool returns. Deprecated: background jobs are frozen under ADR 0001.",
 			Schema: json.RawMessage(`{"type":"object","properties":{}}`),
 			Run: func(_ context.Context, _ json.RawMessage, out *Output) (any, error) {
+				if m.IsFrozen() {
+					return map[string]any{"jobs": []any{}, "status": "frozen", "message": "background jobs are frozen under ADR 0001; tools execute synchronously"}, nil
+				}
 				return m.jobsFrom(out), nil
 			},
 		},
 		{
 			Name: PeepToolName,
 			Description: "observe one job: its state, last tick, and output so far. " +
-				"Report only the values the tool returns.",
+				"Report only the values the tool returns. Deprecated: background jobs are frozen under ADR 0001.",
 			Schema: jobRefSchema,
 			Run: func(_ context.Context, args json.RawMessage, out *Output) (any, error) {
+				if m.IsFrozen() {
+					return nil, errors.New("peep: background jobs are frozen under ADR 0001; no background jobs are running")
+				}
 				job, err := m.callerJob(args, out)
 				if err != nil {
 					return nil, err
@@ -59,9 +65,12 @@ func JobTools(m *Manager) []Tool {
 		{
 			Name: KillToolName,
 			Description: "accept a kill for one job; it is honored at the job's next safe point and the result " +
-				"reports the new state. Never claim a kill the tool did not confirm.",
+				"reports the new state. Never claim a kill the tool did not confirm. Deprecated: background jobs are frozen under ADR 0001.",
 			Schema: jobRefSchema,
 			Run: func(_ context.Context, args json.RawMessage, out *Output) (any, error) {
+				if m.IsFrozen() {
+					return nil, errors.New("kill: background jobs are frozen under ADR 0001; no background jobs are running")
+				}
 				job, err := m.callerJob(args, out)
 				if err != nil {
 					return nil, err
