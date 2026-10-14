@@ -102,6 +102,26 @@ func TestEncodeLineRoundTripsEachKind(t *testing.T) {
 			name: "failure",
 			v:    Failure{Kind: KindError, Error: "link: deliver: empty text"},
 		},
+		{
+			name: "progress_tool_call",
+			v: Progress{
+				Kind:    KindProgress,
+				Chat:    "c1",
+				Stage:   "tool_call",
+				Tool:    "bash",
+				Content: `{"command":"ls"}`,
+			},
+		},
+		{
+			name: "progress_tool_result",
+			v: Progress{
+				Kind:    KindProgress,
+				Chat:    "c1",
+				Stage:   "tool_result",
+				Tool:    "bash",
+				Content: "file1.txt\nfile2.txt",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -138,6 +158,7 @@ func TestEncodedKindFields(t *testing.T) {
 		{Jobs{Kind: KindJobs}, string(KindJobs)},
 		{Peek{Kind: KindPeek}, string(KindPeek)},
 		{Failure{Kind: KindError}, string(KindError)},
+		{Progress{Kind: KindProgress}, string(KindProgress)},
 	}
 	for _, tt := range tests {
 		line, err := EncodeLine(tt.v)

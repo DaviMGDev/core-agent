@@ -146,10 +146,6 @@ func run(ctx context.Context, loop Agent, jobs Jobs, opts Options, args json.Raw
 		if err != nil {
 			return nil, fmt.Errorf("subagent: %w", err)
 		}
-		if opts.Call != nil {
-			opts.Call.Lock()
-			defer opts.Call.Unlock()
-		}
 		resp, err := loop.Handle(ctx, b)
 		if err != nil {
 			return nil, err

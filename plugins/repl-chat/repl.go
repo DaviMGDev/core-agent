@@ -35,6 +35,9 @@ type Reply struct {
 // TopicChatMessage is the layer's topic for conversation messages.
 const TopicChatMessage = "chat.message"
 
+// TopicProgress is the layer's topic for in-turn tool execution progress.
+const TopicProgress = "progress"
+
 // Wake is one host call into the terminal: a user line, or the events a bus
 // wake carries.
 type Wake struct {
@@ -62,10 +65,46 @@ type Answer struct {
 // Render returns the transcript lines one wake's events contribute:
 // chat.message events, one line per message. A payload that carries a text
 // renders the text (an empty one renders nothing); any other payload renders
-// verbatim.
+// verbatim. Progress events render styled tool invocation and result blocks.
 func Render(events []Event) []string {
 	var out []string
 	for _, e := range events {
+		if e.Topic == TopicProgress {
+			var p struct {
+				Stage   string `json:"stage"`
+				Tool    string `json:"tool"`
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(e.Payload, &p); err == nil {
+				if p.Stage == "tool_call" {
+					out = append(out, FormatToolCall(p.Tool, json.RawMessage(p.Content)))
+					continue
+				} else if p.Stage == "tool_result" {
+					out = append(out, FormatToolResult(p.Tool, p.Content))
+					continue
+				}
+			}
+		}
+		if e.Topic == "tool_call" {
+			var p struct {
+				Tool string          `json:"tool"`
+				Args json.RawMessage `json:"args"`
+			}
+			if err := json.Unmarshal(e.Payload, &p); err == nil {
+				out = append(out, FormatToolCall(p.Tool, p.Args))
+				continue
+			}
+		}
+		if e.Topic == "tool_result" {
+			var p struct {
+				Tool   string `json:"tool"`
+				Output string `json:"output"`
+			}
+			if err := json.Unmarshal(e.Payload, &p); err == nil {
+				out = append(out, FormatToolResult(p.Tool, p.Output))
+				continue
+			}
+		}
 		if e.Topic != TopicChatMessage {
 			continue
 		}
@@ -82,6 +121,36 @@ func Render(events []Event) []string {
 		out = append(out, oneLine(text))
 	}
 	return out
+}
+
+// FormatToolCall returns a clear visual representation of a tool call dispatch.
+func FormatToolCall(tool string, args json.RawMessage) string {
+	brief := strings.TrimSpace(string(args))
+	if brief == "" || brief == "{}" {
+		return fmt.Sprintf("⚡ [tool:%s]", tool)
+	}
+	return fmt.Sprintf("⚡ [tool:%s] %s", tool, oneLine(brief))
+}
+
+// FormatToolResult returns a cleanly indented, bounded visual representation of a tool result.
+func FormatToolResult(tool, output string) string {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		trimmed = "(no output)"
+	}
+	rawLines := strings.Split(trimmed, "\n")
+	const maxLines = 10
+	var lines []string
+	if len(rawLines) > maxLines {
+		lines = append(lines, rawLines[:maxLines]...)
+		lines = append(lines, fmt.Sprintf("... (%d lines hidden)", len(rawLines)-maxLines))
+	} else {
+		lines = rawLines
+	}
+	for i, l := range lines {
+		lines[i] = "  ↳ " + l
+	}
+	return fmt.Sprintf("↳ [result:%s]\n%s", tool, strings.Join(lines, "\n"))
 }
 
 // Session is one REPL session: a nickname and a chat-turn counter.

@@ -40,6 +40,7 @@ type Component struct {
 	Jobs    Jobs
 	Execute func(tool string, args json.RawMessage) (any, error)
 	Publish func(text string) error
+	OnProgress func(event ProgressEvent) error
 
 	history keys.History
 	models  keys.ModelRegistry
@@ -236,6 +237,12 @@ func (c *Component) deps(cfg Config, publish bool) Deps {
 				return errors.New("agent: no publish path configured")
 			}
 			return c.Publish(text)
+		},
+		Progress: func(event ProgressEvent) error {
+			if !publish || c.OnProgress == nil {
+				return nil
+			}
+			return c.OnProgress(event)
 		},
 	}
 }

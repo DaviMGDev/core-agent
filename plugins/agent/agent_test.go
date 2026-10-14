@@ -859,6 +859,45 @@ func TestTurnProgressEventsEmittedDuringToolExecution(t *testing.T) {
 	}
 }
 
+func TestTurnProgressToolResultEmittedOnError(t *testing.T) {
+	var events []ProgressEvent
+	step := 0
+	deps := Deps{
+		Append: func(role, text string) error { return nil },
+		Recent: func(n int) ([]Message, error) { return nil, nil },
+		Project: func(msgs []Message) ([]Message, error) { return msgs, nil },
+		Respond: func(text string, context []Message, tools []Tool) (Answer, error) {
+			step++
+			if step == 1 {
+				return Answer{Tool: "bash", Args: json.RawMessage(`{"cmd":"exit 1"}`)}, nil
+			}
+			return Answer{Text: "handled failure"}, nil
+		},
+		Execute: func(tool string, args json.RawMessage) (any, error) {
+			return nil, errors.New("command failed with status 1")
+		},
+		Publish: func(text string) error { return nil },
+		Progress: func(e ProgressEvent) error {
+			events = append(events, e)
+			return nil
+		},
+	}
+
+	res, err := RunTurn(Config{}, "run error", deps)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "handled failure" {
+		t.Fatalf("res.Text = %q, want 'handled failure'", res.Text)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 progress events, got %d", len(events))
+	}
+	if events[1].Stage != "tool_result" || !strings.Contains(events[1].Content, "command failed with status 1") {
+		t.Errorf("expected tool_result containing error message, got %+v", events[1])
+	}
+}
+
 func TestSystemMessageRendersExternalPromptTemplate(t *testing.T) {
 	customTmpl := "System Instructions:\nAvailable Tools:\n{{tools}}\nCore Rules:\n{{rules}}"
 	cfg := Config{

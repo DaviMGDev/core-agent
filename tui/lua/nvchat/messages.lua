@@ -34,15 +34,43 @@ function M.render()
   if state.current then
     for _, message in ipairs(state.current.messages) do
       local first = #lines + 1
-      table.insert(lines, message.sender .. "  " .. message.time)
-      for _, body_line in ipairs(split_message_body(message.body)) do
-        table.insert(lines, body_line)
+      local header = message.sender
+      if message.sender == "tool_call" then
+        header = "tool: " .. (message.tool or "call")
+      elseif message.sender == "tool_result" then
+        header = "result: " .. (message.tool or "tool")
+      end
+      table.insert(lines, header .. "  " .. message.time)
+      local body_lines = split_message_body(message.body)
+      local is_tool_result = (message.sender == "tool_result")
+      local max_preview = 5
+      if is_tool_result and #body_lines > max_preview then
+        if message.collapsed == nil then
+          message.collapsed = true
+        end
+        if message.collapsed then
+          for i = 1, max_preview do
+            table.insert(lines, body_lines[i])
+          end
+          local hidden = #body_lines - max_preview
+          table.insert(lines, "  ... (" .. hidden .. " more lines hidden, press <CR> to expand)")
+        else
+          for _, body_line in ipairs(body_lines) do
+            table.insert(lines, body_line)
+          end
+          table.insert(lines, "  (press <CR> to collapse)")
+        end
+      else
+        for _, body_line in ipairs(body_lines) do
+          table.insert(lines, body_line)
+        end
       end
       table.insert(lines, "")
       state.message_blocks[#state.message_blocks + 1] = {
         first = first,
         last = #lines - 1,
         message = message,
+        header = header,
       }
     end
   end
@@ -56,13 +84,19 @@ function M.render()
     for _, block in ipairs(state.message_blocks) do
       local sender = block.message.sender
       local time = block.message.time
+      local header = block.header or sender
       local sender_hl = (sender == "notice" or sender == "system") and "NvchatSystem" or "NvchatSender"
+      if sender == "tool_call" then
+        sender_hl = "NvchatToolCall"
+      elseif sender == "tool_result" then
+        sender_hl = "NvchatToolResult"
+      end
       vim.api.nvim_buf_set_extmark(state.bufs.messages, ns, block.first - 1, 0, {
-        end_col = #sender,
+        end_col = #header,
         hl_group = sender_hl,
       })
-      vim.api.nvim_buf_set_extmark(state.bufs.messages, ns, block.first - 1, #sender + 2, {
-        end_col = #sender + 2 + #time,
+      vim.api.nvim_buf_set_extmark(state.bufs.messages, ns, block.first - 1, #header + 2, {
+        end_col = #header + 2 + #time,
         hl_group = "NvchatTime",
       })
     end
@@ -244,6 +278,19 @@ function M.yank_block()
   end
 end
 
+-- toggle_collapse() -> expands or collapses a multi-line tool result block under cursor.
+function M.toggle_collapse()
+  local block = block_at_cursor()
+  if block and block.message and block.message.sender == "tool_result" then
+    local body_lines = split_message_body(block.message.body)
+    if #body_lines > 5 then
+      block.message.collapsed = not block.message.collapsed
+      M.render()
+      M.keep_block_visible(block)
+    end
+  end
+end
+
 -- line_in_block(line) -> the block containing a buffer line, or nil.
 local function line_in_block(line)
   for _, block in ipairs(state.message_blocks) do
@@ -313,6 +360,10 @@ function M.attach()
   vim.keymap.set("n", "yy", M.yank_block, {
     buffer = state.bufs.messages,
     desc = "nvchat: yank the selected message block",
+  })
+  vim.keymap.set("n", "<CR>", M.toggle_collapse, {
+    buffer = state.bufs.messages,
+    desc = "nvchat: toggle collapse on tool result",
   })
   vim.keymap.set("x", "y", function()
     -- D24: a visual selection spans whole blocks. The range snaps outward,

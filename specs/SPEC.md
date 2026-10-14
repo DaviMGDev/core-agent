@@ -349,7 +349,14 @@ and dies with it. The screen points at the binary through `vim.g.nvchat_core`
 | `{"kind":"jobs","jobs":[{"job":"<id>","tool":"...","state":"...","parent":"<id>","age_ms":N,"idle_ms":N,"last_tick":"..."}]}` | The answer to `jobs`: the launch's jobs in creation order, each linked to its parent. |
 | `{"kind":"peek","job":"<id>","tool":"...","state":"...","parent":"<id>","age_ms":N,"idle_ms":N,"last_tick":"...","output":"...","result":...,"error":"..."}` | The answer to `peek`: one job's state, last tick, and output so far, with its result once terminal. |
 | `{"kind":"job","event":"started\|completed\|failed\|killed","job":"<id>","tool":"...","detail":"..."}` | A job state transition; detail carries tool args brief on start, formatted and truncated result on completion; ticks never cross the link. |
+| `{"kind":"progress","chat":"<id>","stage":"tool_call\|tool_result","tool":"...","content":"..."}` | Intermediate execution progress during synchronous tool calling: tool invocations and output results streamed before final answer. |
 | `{"kind":"error","error":"..."}` | A malformed request or a failed turn; the loop continues. |
+
+### In-turn Tool Exhibition
+
+During synchronous tool execution within an agent turn (ADR 0001, Issue #50), tool calls and results are exhibited in the conversation transcript:
+- **Link Protocol & nvchat:** Progress events (`tool_call` and `tool_result`) stream across the link and append to conversation history. Tool calls render with distinct headers and extmark highlighting (`NvchatToolCall`). Tool results render with `NvchatToolResult` and support collapsible formatting (outputs exceeding 5 lines preview the first 5 lines with hidden count, expandable/collapsible with `<CR>`).
+- **REPL (`repl-chat`):** Progress events render cleanly on stdout: tool invocations format with `⚡ [tool:<name>] <args>` briefs, and tool results format with `↳ [result:<name>]` and indented lines, truncating beyond 10 lines with an ellipsis notice.
 
 The job queries are read-only: the screen observes and peeks through them.
 Start, peep, kill, and the tick cadence stay with the tool manager, and a

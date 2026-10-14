@@ -121,6 +121,89 @@ func registerPluginSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the session is still running$`, stepSessionRunning)
 	sc.Step(`^the reply names turn (\d+)$`, stepReplyNamesTurn)
 	sc.Step(`^the transcript announces "([^"]*)" at the start$`, stepTranscriptAnnounces)
+	sc.Step(`^a progress event for tool "([^"]*)" with arguments '([^']*)'$`, stepProgressToolCall)
+	sc.Step(`^a progress event for tool "([^"]*)" with result "([^"]*)"$`, stepProgressToolResult)
+	sc.Step(`^a chat message event with text "([^"]*)"$`, stepChatMessageEvent)
+	sc.Step(`^the transcript is rendered$`, stepRenderTranscript)
+	sc.Step(`^the transcript contains the tool call for "([^"]*)"$`, stepTranscriptContainsToolCall)
+	sc.Step(`^the transcript contains the tool result for "([^"]*)"$`, stepTranscriptContainsToolResult)
+	sc.Step(`^the transcript contains the message "([^"]*)"$`, stepTranscriptContainsMessage)
+}
+
+func stepProgressToolCall(ctx context.Context, tool, args string) error {
+	w := worldFrom(ctx)
+	payload, _ := json.Marshal(map[string]string{
+		"stage":   "tool_call",
+		"tool":    tool,
+		"content": args,
+	})
+	w.progressEvents = append(w.progressEvents, replchat.Event{
+		Topic:   replchat.TopicProgress,
+		Payload: payload,
+	})
+	return nil
+}
+
+func stepProgressToolResult(ctx context.Context, tool, result string) error {
+	w := worldFrom(ctx)
+	payload, _ := json.Marshal(map[string]string{
+		"stage":   "tool_result",
+		"tool":    tool,
+		"content": result,
+	})
+	w.progressEvents = append(w.progressEvents, replchat.Event{
+		Topic:   replchat.TopicProgress,
+		Payload: payload,
+	})
+	return nil
+}
+
+func stepChatMessageEvent(ctx context.Context, text string) error {
+	w := worldFrom(ctx)
+	payload, _ := json.Marshal(map[string]string{
+		"text": text,
+	})
+	w.progressEvents = append(w.progressEvents, replchat.Event{
+		Topic:   replchat.TopicChatMessage,
+		Payload: payload,
+	})
+	return nil
+}
+
+func stepRenderTranscript(ctx context.Context) error {
+	w := worldFrom(ctx)
+	w.renderedLines = replchat.Render(w.progressEvents)
+	return nil
+}
+
+func stepTranscriptContainsToolCall(ctx context.Context, tool string) error {
+	w := worldFrom(ctx)
+	for _, l := range w.renderedLines {
+		if strings.Contains(l, "[tool:"+tool+"]") {
+			return nil
+		}
+	}
+	return fmt.Errorf("tool call for %s not found in rendered transcript: %v", tool, w.renderedLines)
+}
+
+func stepTranscriptContainsToolResult(ctx context.Context, tool string) error {
+	w := worldFrom(ctx)
+	for _, l := range w.renderedLines {
+		if strings.Contains(l, "[result:"+tool+"]") {
+			return nil
+		}
+	}
+	return fmt.Errorf("tool result for %s not found in rendered transcript: %v", tool, w.renderedLines)
+}
+
+func stepTranscriptContainsMessage(ctx context.Context, text string) error {
+	w := worldFrom(ctx)
+	for _, l := range w.renderedLines {
+		if strings.Contains(l, text) {
+			return nil
+		}
+	}
+	return fmt.Errorf("message %q not found in rendered transcript: %v", text, w.renderedLines)
 }
 
 // --- provider-manager -------------------------------------------------------

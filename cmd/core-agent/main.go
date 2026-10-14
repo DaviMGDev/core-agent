@@ -341,6 +341,17 @@ func runConfig(ctx context.Context, in io.Reader, out io.Writer, cfg sessionConf
 	// unprompted message take the same path — while the host drives the
 	// session loop.
 	sub := s.bus.Subscribe(notifications.TopicChatMessage, terminalWaker{ctx: ctx, comp: s.terminal, log: out})
+	if s.agent != nil {
+		s.agent.OnProgress = func(event agent.ProgressEvent) error {
+			payload, _ := json.Marshal(event)
+			wake := replchat.Wake{Events: []replchat.Event{{
+				Topic:   replchat.TopicProgress,
+				Payload: payload,
+			}}}
+			_, err := invokeTerminal(ctx, s.terminal, wake)
+			return err
+		}
+	}
 	session := replchat.New(cfg.nick)
 	emit := func(text string) { _, _ = out.Write([]byte(text)) }
 	if err := session.Run(in, emit, func(line string) (string, error) {

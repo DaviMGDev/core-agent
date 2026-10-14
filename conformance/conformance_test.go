@@ -132,12 +132,14 @@ type world struct {
 	window  contextmanager.Window
 
 	// repl-chat library
-	session     *replchat.Session
-	reply       replchat.Reply
-	events      []string
-	failNext    bool
-	lastLine    string
-	transcripts int
+	session        *replchat.Session
+	reply          replchat.Reply
+	events         []string
+	failNext       bool
+	lastLine       string
+	transcripts    int
+	progressEvents []replchat.Event
+	renderedLines  []string
 
 	// notifications
 	bus         *notifications.Bus

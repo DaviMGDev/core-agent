@@ -553,6 +553,91 @@ func TestDynamicContextPayloadRespectsBudgetBoundaries(t *testing.T) {
 	}
 }
 
+// TestComponentRoutesProgressToHostSubscriber verifies that host turn execution
+// routes progress events to host subscribers via Component.OnProgress.
+func TestComponentRoutesProgressToHostSubscriber(t *testing.T) {
+	ctx := context.Background()
+	var (
+		log lockedBuffer
+		progressEvents []ProgressEvent
+		mu sync.Mutex
+	)
+	pub := &publishCapture{}
+	sched := runtime.New()
+	t.Cleanup(func() { _ = sched.Close() })
+
+	insert := func(comp runtime.Component, payload string) mcontext.FiberID {
+		t.Helper()
+		id, err := sched.Insert(comp, payload)
+		if err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		return id
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var req struct {
+			Messages []struct {
+				Role string `json:"role"`
+			} `json:"messages"`
+		}
+		_ = json.Unmarshal(b, &req)
+		w.Header().Set("content-type", "application/json")
+		// First call returns a tool call, second call after tool result returns final speech
+		if len(req.Messages) <= 2 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"calc","arguments":"{\"x\":1}"}}]}}]}`)
+		} else {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"finished"}}]}`)
+		}
+	}))
+	defer srv.Close()
+
+	endpoint, _ := json.Marshal(map[string]any{"providers": []any{map[string]any{
+		"name": "scripted", "endpoint": srv.URL, "models": []string{"calc-model"},
+	}}})
+	agentPayload, _ := json.Marshal(map[string]any{
+		"conversation": "main", "model": "calc-model", "budget": 1000,
+		"tools": []any{
+			map[string]any{"name": "calc", "description": "calculate"},
+		},
+	})
+
+	waitActive(t, sched, insert(providermanager.NewComponent(&log), string(endpoint)))
+	waitActive(t, sched, insert(modelmanager.NewComponent(&log), `{"models":[]}`))
+	waitActive(t, sched, insert(chathistory.NewComponent(&log), "main"))
+	waitActive(t, sched, insert(contextmanager.NewComponent(&log), `{"budget":4096}`))
+
+	ag := NewComponent(&log, &scriptJobs{}, pub.publish)
+	ag.Execute = func(tool string, args json.RawMessage) (any, error) {
+		return map[string]any{"res": 42}, nil
+	}
+	ag.OnProgress = func(event ProgressEvent) error {
+		mu.Lock()
+		progressEvents = append(progressEvents, event)
+		mu.Unlock()
+		return nil
+	}
+	waitActive(t, sched, insert(ag, string(agentPayload)))
+
+	out := handleWake(t, ctx, ag, Wake{Line: "do math"})
+	if out.Text != "finished" {
+		t.Fatalf("out.Text = %q, want 'finished'", out.Text)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(progressEvents) != 2 {
+		t.Fatalf("expected 2 progress events routed to host subscriber, got %d: %+v", len(progressEvents), progressEvents)
+	}
+	if progressEvents[0].Stage != "tool_call" || progressEvents[0].Tool != "calc" {
+		t.Errorf("expected tool_call event for calc, got %+v", progressEvents[0])
+	}
+	if progressEvents[1].Stage != "tool_result" || progressEvents[1].Tool != "calc" {
+		t.Errorf("expected tool_result event for calc, got %+v", progressEvents[1])
+	}
+}
+
 // TestRespondResultPropagatesRichTelemetry proves keys.ModelRegistry.RespondResult
 // preserves reasoning blocks and usage stats across the Memento key boundary.
 func TestRespondResultPropagatesRichTelemetry(t *testing.T) {

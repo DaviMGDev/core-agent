@@ -198,7 +198,20 @@ local function handle_line(line)
       h.on_peek(msg)
     end
   elseif msg.kind == "progress" then
-    -- Progress updates provide intermediate status or thoughts (#40) without ending the turn.
+    -- Progress updates provide intermediate status or tool calls/results (#40, #50) without ending the turn.
+    local chat = (msg.chat and chats[msg.chat]) or last
+    if chat and (msg.stage == "tool_call" or msg.stage == "tool_result") then
+      local sender = msg.stage
+      local body = msg.content or ""
+      local entry = { sender = sender, tool = msg.tool, time = now(), body = body }
+      table.insert(chat.messages, entry)
+      last = chat
+      local q = pending[chat.id]
+      local h = (q and #q > 0) and q[1] or nil
+      if h and h.on_reply then
+        h.on_reply(chat, entry)
+      end
+    end
     if M.on_progress then
       M.on_progress(msg)
     end

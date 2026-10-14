@@ -203,3 +203,53 @@ func TestRunContinuesAfterResponderError(t *testing.T) {
 		t.Errorf("responder error not reported:\n%s", joined)
 	}
 }
+
+func TestRenderToolInvocationBrief(t *testing.T) {
+	events := []Event{
+		{
+			Topic:   TopicProgress,
+			Payload: []byte(`{"stage":"tool_call","tool":"bash","content":"{\"command\":\"ls -la\"}"}`),
+		},
+		{
+			Topic:   TopicChatMessage,
+			Payload: []byte(`{"text":"final answer"}`),
+		},
+	}
+	lines := Render(events)
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %+v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "⚡ [tool:bash]") || !strings.Contains(lines[0], "ls -la") {
+		t.Errorf("tool invocation line format mismatch: %q", lines[0])
+	}
+	if lines[1] != "final answer" {
+		t.Errorf("final speech line format mismatch: %q", lines[1])
+	}
+}
+
+func TestRenderToolExecutionOutputTruncatedAndIndented(t *testing.T) {
+	longResult := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12"
+	events := []Event{
+		{
+			Topic:   TopicProgress,
+			Payload: []byte(`{"stage":"tool_result","tool":"bash","content":"` + strings.ReplaceAll(longResult, "\n", "\\n") + `"}`),
+		},
+	}
+	lines := Render(events)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 result block, got %d", len(lines))
+	}
+	block := lines[0]
+	if !strings.Contains(block, "↳ [result:bash]") {
+		t.Errorf("missing result header: %q", block)
+	}
+	if !strings.Contains(block, "  ↳ line1") || !strings.Contains(block, "  ↳ line10") {
+		t.Errorf("missing indented lines: %q", block)
+	}
+	if !strings.Contains(block, "2 lines hidden") {
+		t.Errorf("missing truncation notice: %q", block)
+	}
+	if strings.Contains(block, "line11") {
+		t.Errorf("line11 should be truncated, but appeared in block: %q", block)
+	}
+}

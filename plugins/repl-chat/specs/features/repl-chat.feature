@@ -49,3 +49,15 @@ Feature: repl-chat session protocol
       When the session ends
       Then the transcript announces "repl:" at the start
       And the transcript reports "repl: session closed" on unload
+
+  Rule: In-turn tool exhibition
+
+    Scenario: Progress events exhibit tool calls and results before final speech
+      Given a progress event for tool "bash" with arguments '{"command":"ls"}'
+      And a progress event for tool "bash" with result "file.txt"
+      And a chat message event with text "done"
+      When the transcript is rendered
+      Then the transcript contains the tool call for "bash"
+      And the transcript contains the tool result for "bash"
+      And the transcript contains the message "done"
+

@@ -173,6 +173,33 @@ check(
   job12_entry.body == "job job-12: completed subagent"
 )
 
+-- 3.4b: progress events append tool call and result entries to the active conversation history
+local progress_tool_call_received = false
+local progress_tool_result_received = false
+store.on_progress = function(p)
+  if p.stage == "tool_call" and p.tool == "bash" then
+    progress_tool_call_received = true
+  end
+  if p.stage == "tool_result" and p.tool == "bash" then
+    progress_tool_result_received = true
+  end
+end
+
+local msg_count_before = #recent_chat.messages
+store._handle_line('{"kind":"progress","chat":"' .. recent_chat.id .. '","stage":"tool_call","tool":"bash","content":"echo test_progress"}')
+store._handle_line('{"kind":"progress","chat":"' .. recent_chat.id .. '","stage":"tool_result","tool":"bash","content":"test_progress"}')
+
+check(
+  "progress tool_call appends to conversation messages",
+  #recent_chat.messages == msg_count_before + 2 and recent_chat.messages[msg_count_before + 1].sender == "tool_call" and recent_chat.messages[msg_count_before + 1].tool == "bash"
+)
+check(
+  "progress tool_result appends to conversation messages",
+  recent_chat.messages[#recent_chat.messages].sender == "tool_result" and recent_chat.messages[#recent_chat.messages].body == "test_progress"
+)
+check("store.on_progress invoked for tool_call", progress_tool_call_received)
+check("store.on_progress invoked for tool_result", progress_tool_result_received)
+
 -- 3.5: an unreachable core reports an error instead of serving anything.
 store.stop()
 package.loaded["nvchat.store"] = nil

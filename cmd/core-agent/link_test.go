@@ -71,6 +71,12 @@ func linkLines(t *testing.T, stream string) []any {
 				t.Fatalf("failure %q: %v", raw, err)
 			}
 			lines = append(lines, f)
+		case link.KindProgress:
+			var p link.Progress
+			if err := json.Unmarshal([]byte(raw), &p); err != nil {
+				t.Fatalf("progress %q: %v", raw, err)
+			}
+			lines = append(lines, p)
 		default:
 			t.Fatalf("unknown kind %q in %q", probe.Kind, raw)
 		}
@@ -732,3 +738,37 @@ func TestDeliverSynchronousToolExecutionInLink(t *testing.T) {
 	}
 }
 
+
+func TestDeliverSynchronousSubagentExecutionDeadlockCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		line := lastUserMessage(raw)
+		w.Header().Set("content-type", "application/json")
+		if strings.Contains(line, "write a poem") {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"subagent","arguments":"{\"brief\":\"write a short poem\"}"}}]}}]}`)
+		} else if strings.Contains(line, "write a short poem") {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Roses are red,\nViolets are blue."}}]}`)
+		} else {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Here is the poem: Roses are red, Violets are blue."}}]}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := sessionFrom(t, testResolved(t), "tester")
+	cfg.providers = providerDoc(testProvider{Name: "local", Endpoint: srv.URL, Models: []string{"gemma4:cloud"}})
+	pw, manager, out, _, stop := startDrivenLinkWith(t, cfg)
+	defer stop()
+
+	manager.SetFrozen(true)
+
+	writeLine(t, pw, `{"kind":"deliver","chat":"poem-chat","text":"write a poem"}`)
+
+	waitFor(t, "synchronous subagent delegation and final reply", func() bool {
+		for _, m := range pull[link.Message](linkLines(t, out.String())) {
+			if m.Chat == "poem-chat" && strings.Contains(m.Text, "Here is the poem") {
+				return true
+			}
+		}
+		return false
+	}, out)
+}

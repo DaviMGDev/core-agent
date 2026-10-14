@@ -200,6 +200,69 @@ fresh_messages.highlight_selection()
 local sel_marks_out_win = vim.api.nvim_buf_get_extmarks(fresh.bufs.messages, fresh.ns_sel, 0, -1, {})
 check("selection highlight cleared when outside messages window", #sel_marks_out_win == 0)
 
+-- Tool invocation block and custom styling (Issue #50)
+table.insert(current_chat.messages, {
+  sender = "tool_call",
+  tool = "bash",
+  time = "12:36",
+  body = '{"command":"echo hello"}',
+})
+fresh_messages.render()
+local tool_block = fresh.message_blocks[#fresh.message_blocks]
+local tool_lines = vim.api.nvim_buf_get_lines(fresh.bufs.messages, tool_block.first - 1, tool_block.last, false)
+check(
+  "tool invocation renders distinct header styling",
+  tool_lines[1]:find("tool: bash", 1, true) ~= nil
+)
+local extmarks = vim.api.nvim_buf_get_extmarks(
+  fresh.bufs.messages,
+  fresh.ns,
+  { tool_block.first - 1, 0 },
+  { tool_block.first - 1, -1 },
+  { details = true }
+)
+local found_tool_hl = false
+for _, mark in ipairs(extmarks) do
+  if mark[4] and mark[4].hl_group == "NvchatToolCall" then
+    found_tool_hl = true
+  end
+end
+check("tool call header uses dedicated NvchatToolCall highlight group", found_tool_hl)
+
+-- Tool execution result block: bounded preview and toggleable collapse (Issue #50)
+local long_output = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10"
+table.insert(current_chat.messages, {
+  sender = "tool_result",
+  tool = "bash",
+  time = "12:37",
+  body = long_output,
+})
+fresh_messages.render()
+local res_block = fresh.message_blocks[#fresh.message_blocks]
+local res_lines_collapsed = vim.api.nvim_buf_get_lines(fresh.bufs.messages, res_block.first - 1, res_block.last, false)
+
+check(
+  "long tool outputs are bounded with hidden lines indicator",
+  #res_lines_collapsed == 7
+    and res_lines_collapsed[1]:find("result: bash", 1, true) ~= nil
+    and res_lines_collapsed[6] == "line 5"
+    and res_lines_collapsed[7]:find("5 more lines hidden", 1, true) ~= nil
+)
+
+-- Toggle collapse by cursor position and calling toggle_collapse
+vim.api.nvim_set_current_win(fresh.wins.messages)
+vim.api.nvim_win_set_cursor(fresh.wins.messages, { res_block.first, 0 })
+fresh_messages.toggle_collapse()
+
+local res_block_expanded = fresh.message_blocks[#fresh.message_blocks]
+local res_lines_expanded = vim.api.nvim_buf_get_lines(fresh.bufs.messages, res_block_expanded.first - 1, res_block_expanded.last, false)
+check(
+  "long tool outputs are toggleable to show full content",
+  #res_lines_expanded == 12
+    and res_lines_expanded[11] == "line 10"
+    and res_lines_expanded[12]:find("press <CR> to collapse", 1, true) ~= nil
+)
+
 if failures > 0 then
   print(failures .. " check(s) failed")
   vim.cmd("cquit 3")

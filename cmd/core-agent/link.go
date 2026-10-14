@@ -89,6 +89,9 @@ type linkFrontend struct {
 	session *composedSession
 	out     *linkWriter
 
+	activeMu   sync.Mutex
+	activeChat string
+
 	jobMu sync.Mutex        // guards jobs
 	jobs  map[string]string // job id -> the chat whose turn started it
 }
@@ -144,6 +147,15 @@ func (f *linkFrontend) serve(in io.Reader) error {
 func (f *linkFrontend) deliver(chat, text string) {
 	cfg := f.session.agentConfig.Normalized()
 	cfg.Conversation = chat
+	f.activeMu.Lock()
+	f.activeChat = chat
+	f.activeMu.Unlock()
+	defer func() {
+		f.activeMu.Lock()
+		f.activeChat = ""
+		f.activeMu.Unlock()
+	}()
+
 	f.session.gate.Lock()
 	answer, err := f.invoke(agent.Wake{Line: text, Config: &cfg})
 	f.session.gate.Unlock()
@@ -297,6 +309,24 @@ func (f *linkFrontend) jobChat(job string) string {
 // immediately, and the agent wakes on the notification clock so a burst of
 // job events flushes as one batched turn.
 func (f *linkFrontend) attach(s *composedSession) {
+	if s.agent != nil {
+		s.agent.OnProgress = func(event agent.ProgressEvent) error {
+			f.activeMu.Lock()
+			chat := f.activeChat
+			f.activeMu.Unlock()
+			if chat == "" {
+				chat = s.agentConfig.Conversation
+			}
+			f.out.line(link.Progress{
+				Kind:    link.KindProgress,
+				Chat:    chat,
+				Stage:   event.Stage,
+				Tool:    event.Tool,
+				Content: event.Content,
+			})
+			return nil
+		}
+	}
 	for _, topic := range linkStreamTopics {
 		s.bus.Subscribe(topic, linkStream{f: f})
 	}

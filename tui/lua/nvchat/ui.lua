@@ -51,6 +51,8 @@ local function define_highlights()
   vim.api.nvim_set_hl(0, "NvchatActive", { link = "Visual", default = true })
   vim.api.nvim_set_hl(0, "NvchatSelection", { link = "Visual", default = true })
   vim.api.nvim_set_hl(0, "NvchatButton", { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, "NvchatToolCall", { link = "Special", default = true })
+  vim.api.nvim_set_hl(0, "NvchatToolResult", { link = "Identifier", default = true })
 end
 
 -- A rendered region buffer: plain text, never edited directly.

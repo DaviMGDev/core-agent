@@ -95,11 +95,13 @@ $ core-agent -tui                 # JSON lines on stdin/stdout; component logs o
 ```
 
 The wire schema (requests `deliver`/`load`; messages `message`/`loaded`/
-`job`/`error`) is in [`specs/SPEC.md`](specs/SPEC.md), section TUI Link. The
+`job`/`progress`/`error`) is in [`specs/SPEC.md`](specs/SPEC.md), section TUI Link. The
 screen's store (`tui/lua/nvchat/store.lua`) is the only Lua module that
 knows the core exists: it spawns `core-agent -tui` per launch, points
 `list`/`recent`/`load`/`deliver` at it, and freezes the screen if the link
-dies. The binary and extra flags come from `vim.g.nvchat_core` and
+dies. In-turn tool invocations and execution results stream as `progress` events
+and render with distinct highlight groups and collapsible outputs in `nvchat`, and
+as indented, bounded blocks on stdout in the REPL. The binary and extra flags come from `vim.g.nvchat_core` and
 `vim.g.nvchat_core_args`:
 
 ```console
