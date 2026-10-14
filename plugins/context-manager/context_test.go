@@ -141,3 +141,56 @@ func TestApplyProject(t *testing.T) {
 		t.Fatal("Apply(unknown) = nil, want error")
 	}
 }
+
+func TestEstimateTokensBPE(t *testing.T) {
+	// Standard English: "hello" (2) + "world" (2) = 4 tokens
+	if got := EstimateTokens("hello world"); got != 4 {
+		t.Errorf("EstimateTokens('hello world') = %d, want 4", got)
+	}
+	// Non-ASCII CJK expands to multi-token byte sequence
+	cjk := "你好世界"
+	if got := EstimateTokens(cjk); got < len([]rune(cjk))*2 {
+		t.Errorf("EstimateTokens(%q) = %d, want >= 8", cjk, got)
+	}
+	// Punctuation and symbols split tokens
+	code := "func main() { fmt.Println(123) }"
+	if got := EstimateTokens(code); got < 10 {
+		t.Errorf("EstimateTokens(code) = %d, want >= 10", got)
+	}
+}
+
+func TestProjectModeBPE(t *testing.T) {
+	history := []Message{
+		{Role: "user", Text: "first question with some words"},
+		{Role: "assistant", Text: "an answer that is detailed and explanatory"},
+		{Role: "user", Text: "final brief follow up"},
+	}
+	// Total tokens: ~8 + ~8 + ~4 = ~20 tokens.
+	// With budget 10 in BPE mode, only the newest message should fit.
+	w := ProjectMode(history, 10, ModeBPE)
+	if len(w.Messages) != 1 || w.Messages[0].Text != "final brief follow up" {
+		t.Fatalf("ProjectMode(ModeBPE) = %+v, want only final follow up", w.Messages)
+	}
+	if w.Dropped != 2 {
+		t.Fatalf("Dropped = %d, want 2", w.Dropped)
+	}
+}
+
+func TestProjectModeBPEHeadroomForMultilingual(t *testing.T) {
+	history := []Message{
+		{Role: "user", Text: "Hello"},
+		{Role: "user", Text: "こんにちは世界！这是一个测试。"},
+	}
+	// In rune mode, the CJK text is only 15 runes.
+	// But in BPE mode, each CJK char counts as 2 tokens (~30 tokens).
+	// With budget 20, in rune mode it would fit (15 < 20).
+	// In BPE mode, it must recognize the expansion and truncate or drop older messages.
+	w := ProjectMode(history, 20, ModeBPE)
+	if len(w.Messages) != 1 {
+		t.Fatalf("expected 1 message kept under BPE budget, got %d", len(w.Messages))
+	}
+	cost := TokenCost(w.Messages[0].Text, ModeBPE)
+	if cost > 20 {
+		t.Fatalf("projected message cost %d exceeds budget 20", cost)
+	}
+}
