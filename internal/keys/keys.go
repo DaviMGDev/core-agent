@@ -59,6 +59,23 @@ type PresentedTool struct {
 	Parameters  json.RawMessage
 }
 
+// Usage tracks token consumption telemetry from model providers.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+}
+
+// CompletionResult carries full provider telemetry and reasoning blocks (#42).
+type CompletionResult struct {
+	Text         string          `json:"text"`
+	Reasoning    string          `json:"reasoning,omitempty"`
+	FinishReason string          `json:"finish_reason,omitempty"`
+	Usage        Usage           `json:"usage,omitempty"`
+	Raw          json.RawMessage `json:"raw,omitempty"`
+}
+
 // ModelResolution is the flattened resolution of a model view name: how it
 // resolves and the concrete models it reaches.
 type ModelResolution struct {
@@ -69,10 +86,11 @@ type ModelResolution struct {
 // ModelRegistry is the model service behind the "model-registry" key: the
 // native model-manager binds it, the agent injects it. Respond answers
 // through the resolved provider; the tools travel as a native tools array
-// when the surface is non-empty.
+// when the surface is non-empty. RespondResult preserves provider telemetry.
 type ModelRegistry interface {
 	Resolve(name string) (ModelResolution, error)
 	Respond(model string, messages []ChatMessage, tools []PresentedTool) (string, error)
+	RespondResult(model string, messages []ChatMessage, tools []PresentedTool) (CompletionResult, error)
 }
 
 // ModelRegistryKey is the model-registry capability: the native

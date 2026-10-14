@@ -174,6 +174,14 @@ func (a modelAdapter) Resolve(name string) (keys.ModelResolution, error) {
 }
 
 func (a modelAdapter) Respond(model string, messages []keys.ChatMessage, tools []keys.PresentedTool) (string, error) {
+	res, err := a.RespondResult(model, messages, tools)
+	if err != nil {
+		return "", err
+	}
+	return res.Text, nil
+}
+
+func (a modelAdapter) RespondResult(model string, messages []keys.ChatMessage, tools []keys.PresentedTool) (keys.CompletionResult, error) {
 	ctx := make([]ContextMessage, 0, len(messages))
 	for _, m := range messages {
 		ctx = append(ctx, ContextMessage{Role: m.Role, Text: m.Text, ToolCallID: m.ToolCallID})
@@ -184,7 +192,17 @@ func (a modelAdapter) Respond(model string, messages []keys.ChatMessage, tools [
 	}
 	res, err := Apply(a.registry, Op{Kind: "respond", Model: model, Context: ctx, Tools: surface}, a.caller)
 	if err != nil {
-		return "", err
+		return keys.CompletionResult{}, err
 	}
-	return res.Text, nil
+	return keys.CompletionResult{
+		Text:         res.Text,
+		Reasoning:    res.Reasoning,
+		FinishReason: res.FinishReason,
+		Usage: keys.Usage{
+			PromptTokens:     res.Usage.PromptTokens,
+			CompletionTokens: res.Usage.CompletionTokens,
+			TotalTokens:      res.Usage.TotalTokens,
+			ReasoningTokens:  res.Usage.ReasoningTokens,
+		},
+	}, nil
 }

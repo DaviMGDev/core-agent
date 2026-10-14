@@ -236,12 +236,32 @@ type ContextMessage struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
+// Usage tracks token consumption telemetry from model providers.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+}
+
+// CompletionResult carries full provider telemetry and reasoning blocks (#42).
+type CompletionResult struct {
+	Text         string          `json:"text"`
+	Reasoning    string          `json:"reasoning,omitempty"`
+	FinishReason string          `json:"finish_reason,omitempty"`
+	Usage        Usage           `json:"usage,omitempty"`
+	Raw          json.RawMessage `json:"raw,omitempty"`
+}
+
 // Result is the response of an operation.
 type Result struct {
-	Mode   Mode     `json:"mode,omitempty"`
-	Models []string `json:"models,omitempty"`
-	Model  string   `json:"model,omitempty"`
-	Text   string   `json:"text,omitempty"`
+	Mode         Mode             `json:"mode,omitempty"`
+	Models       []string         `json:"models,omitempty"`
+	Model        string           `json:"model,omitempty"`
+	Text         string           `json:"text,omitempty"`
+	Reasoning    string           `json:"reasoning,omitempty"`
+	FinishReason string           `json:"finish_reason,omitempty"`
+	Usage        Usage            `json:"usage,omitempty"`
 }
 
 // Caller performs one model completion. The implementation owns provider
@@ -252,6 +272,12 @@ type Caller interface {
 	Complete(model string, messages []ContextMessage, tools []Tool) (string, error)
 }
 
+// ResultCaller is an optional extension to Caller that returns rich CompletionResult telemetry.
+type ResultCaller interface {
+	Caller
+	CompleteResult(model string, messages []ContextMessage, tools []Tool) (CompletionResult, error)
+}
+
 // MockCaller answers without a provider: it echoes the model, the last user
 // message, and the context size. It implements Caller, so a composition mocks
 // the LLM by config alone — a provider marked mock — with no network at all.
@@ -259,9 +285,18 @@ type MockCaller struct{}
 
 // Complete returns the deterministic mock reply. The mock ignores the tool
 // surface: the text-directive path stays for mock and scripted providers.
-func (MockCaller) Complete(model string, messages []ContextMessage, tools []Tool) (string, error) {
-	if err := ValidateMessages(messages); err != nil {
+func (m MockCaller) Complete(model string, messages []ContextMessage, tools []Tool) (string, error) {
+	res, err := m.CompleteResult(model, messages, tools)
+	if err != nil {
 		return "", err
+	}
+	return res.Text, nil
+}
+
+// CompleteResult returns the mock reply along with simulated usage stats.
+func (MockCaller) CompleteResult(model string, messages []ContextMessage, tools []Tool) (CompletionResult, error) {
+	if err := ValidateMessages(messages); err != nil {
+		return CompletionResult{}, err
 	}
 	text := ""
 	for _, m := range messages {
@@ -272,10 +307,19 @@ func (MockCaller) Complete(model string, messages []ContextMessage, tools []Tool
 	if text == "" && len(messages) > 0 {
 		text = messages[len(messages)-1].Text
 	}
+	reply := fmt.Sprintf("mock(%s): %s (context:%d)", model, text, len(messages))
 	if text == "" {
-		return fmt.Sprintf("mock(%s) (context:%d)", model, len(messages)), nil
+		reply = fmt.Sprintf("mock(%s) (context:%d)", model, len(messages))
 	}
-	return fmt.Sprintf("mock(%s): %s (context:%d)", model, text, len(messages)), nil
+	return CompletionResult{
+		Text:         reply,
+		FinishReason: "stop",
+		Usage: Usage{
+			PromptTokens:     len(messages) * 5,
+			CompletionTokens: 10,
+			TotalTokens:      len(messages)*5 + 10,
+		},
+	}, nil
 }
 
 // Apply runs one operation against the registry: "resolve" returns the
@@ -308,13 +352,40 @@ func Apply(r *Registry, op Op, caller Caller) (Result, error) {
 		if res.Mode == ModeFallback {
 			var lastErr error
 			for _, model := range res.Models {
-				text, err := caller.Complete(model, op.Context, op.Tools)
-				if err == nil {
-					return Result{Model: model, Text: text}, nil
+				if rc, ok := caller.(ResultCaller); ok {
+					compRes, err := rc.CompleteResult(model, op.Context, op.Tools)
+					if err == nil {
+						return Result{
+							Model:        model,
+							Text:         compRes.Text,
+							Reasoning:    compRes.Reasoning,
+							FinishReason: compRes.FinishReason,
+							Usage:        compRes.Usage,
+						}, nil
+					}
+					lastErr = err
+				} else {
+					text, err := caller.Complete(model, op.Context, op.Tools)
+					if err == nil {
+						return Result{Model: model, Text: text}, nil
+					}
+					lastErr = err
 				}
-				lastErr = err
 			}
 			return Result{}, fmt.Errorf("model-manager: fallback %q exhausted: %w", op.Model, lastErr)
+		}
+		if rc, ok := caller.(ResultCaller); ok {
+			compRes, err := rc.CompleteResult(res.Models[0], op.Context, op.Tools)
+			if err != nil {
+				return Result{}, err
+			}
+			return Result{
+				Model:        res.Models[0],
+				Text:         compRes.Text,
+				Reasoning:    compRes.Reasoning,
+				FinishReason: compRes.FinishReason,
+				Usage:        compRes.Usage,
+			}, nil
 		}
 		text, err := caller.Complete(res.Models[0], op.Context, op.Tools)
 		if err != nil {

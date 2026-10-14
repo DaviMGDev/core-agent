@@ -367,3 +367,41 @@ func TestValidateMessagesRejectsEmptyAndInvalidRoles(t *testing.T) {
 	}
 }
 
+
+func TestCompleteResultRetainsTelemetryAndReasoning(t *testing.T) {
+	respJSON := `{
+		"choices": [{
+			"message": {
+				"role": "assistant",
+				"content": "42",
+				"reasoning_content": "let me think... 6 * 7 = 42"
+			},
+			"finish_reason": "stop"
+		}],
+		"usage": {
+			"prompt_tokens": 15,
+			"completion_tokens": 10,
+			"total_tokens": 25,
+			"completion_tokens_details": {
+				"reasoning_tokens": 6
+			}
+		}
+	}`
+
+	res, err := decodeCompletionResult("test-provider", 200, []byte(respJSON))
+	if err != nil {
+		t.Fatalf("decodeCompletionResult failed: %v", err)
+	}
+	if res.Text != "42" {
+		t.Errorf("Text = %q, want '42'", res.Text)
+	}
+	if res.Reasoning != "let me think... 6 * 7 = 42" {
+		t.Errorf("Reasoning = %q, want reasoning content", res.Reasoning)
+	}
+	if res.FinishReason != "stop" {
+		t.Errorf("FinishReason = %q, want 'stop'", res.FinishReason)
+	}
+	if res.Usage.TotalTokens != 25 || res.Usage.ReasoningTokens != 6 {
+		t.Errorf("Usage = %+v, want total 25, reasoning 6", res.Usage)
+	}
+}

@@ -57,8 +57,22 @@ type chatRequest struct {
 
 type chatResponse struct {
 	Choices []struct {
-		Message ChatMessage `json:"message"`
+		Message struct {
+			Role             string     `json:"role"`
+			Content          string     `json:"content"`
+			ReasoningContent string     `json:"reasoning_content,omitempty"`
+			ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason,omitempty"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens            int `json:"prompt_tokens,omitempty"`
+		CompletionTokens        int `json:"completion_tokens,omitempty"`
+		TotalTokens             int `json:"total_tokens,omitempty"`
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+		} `json:"completion_tokens_details,omitempty"`
+	} `json:"usage,omitempty"`
 }
 
 // caller performs one model completion over HTTP, resolved to a provider
@@ -71,15 +85,23 @@ type caller struct {
 }
 
 func (c caller) Complete(model string, messages []ContextMessage, tools []Tool) (string, error) {
-	if err := ValidateMessages(messages); err != nil {
+	res, err := c.CompleteResult(model, messages, tools)
+	if err != nil {
 		return "", err
+	}
+	return res.Text, nil
+}
+
+func (c caller) CompleteResult(model string, messages []ContextMessage, tools []Tool) (CompletionResult, error) {
+	if err := ValidateMessages(messages); err != nil {
+		return CompletionResult{}, err
 	}
 	p, ok := c.providers.ProviderFor(model)
 	if !ok {
-		return "", fmt.Errorf("model-manager: no provider serves model %q", model)
+		return CompletionResult{}, fmt.Errorf("model-manager: no provider serves model %q", model)
 	}
 	if p.Mock {
-		return MockCaller{}.Complete(model, messages, tools)
+		return MockCaller{}.CompleteResult(model, messages, tools)
 	}
 	msgs := FormatChatMessages(messages)
 	req := chatRequest{Model: model, Messages: msgs, Tools: OpenAITools(tools)}
@@ -89,19 +111,19 @@ func (c caller) Complete(model string, messages []ContextMessage, tools []Tool) 
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return "", err
+		return CompletionResult{}, err
 	}
 	headers := map[string]string{"content-type": "application/json"}
 	if p.Credential != "" {
 		secret, err := substituteRef("Bearer "+p.Credential, c.resolve)
 		if err != nil {
-			return "", fmt.Errorf("model-manager: request to provider %q failed", p.Name)
+			return CompletionResult{}, fmt.Errorf("model-manager: request to provider %q failed", p.Name)
 		}
 		headers["authorization"] = secret
 	}
 	httpReq, err := http.NewRequest("POST", strings.TrimRight(p.Endpoint, "/")+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("model-manager: request to provider %q failed", p.Name)
+		return CompletionResult{}, fmt.Errorf("model-manager: request to provider %q failed", p.Name)
 	}
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
@@ -112,40 +134,63 @@ func (c caller) Complete(model string, messages []ContextMessage, tools []Tool) 
 	}
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("model-manager: request to provider %q failed", p.Name)
+		return CompletionResult{}, fmt.Errorf("model-manager: request to provider %q failed", p.Name)
 	}
 	defer httpResp.Body.Close()
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return "", fmt.Errorf("model-manager: request to provider %q failed", p.Name)
+		return CompletionResult{}, fmt.Errorf("model-manager: request to provider %q failed", p.Name)
 	}
-	return decodeCompletion(p.Name, httpResp.StatusCode, respBody)
+	return decodeCompletionResult(p.Name, httpResp.StatusCode, respBody)
 }
 
 // decodeCompletion extracts the assistant text from one provider response:
 // a tool_calls answer normalizes to the agent's directive, any other answer
 // is the message content.
 func decodeCompletion(providerName string, status int, body []byte) (string, error) {
+	res, err := decodeCompletionResult(providerName, status, body)
+	if err != nil {
+		return "", err
+	}
+	return res.Text, nil
+}
+
+// decodeCompletionResult extracts the assistant text and rich telemetry from one provider response.
+func decodeCompletionResult(providerName string, status int, body []byte) (CompletionResult, error) {
 	if status < 200 || status >= 300 {
 		detail := strings.TrimSpace(string(body))
 		if len(detail) > 200 {
 			detail = detail[:200]
 		}
 		if detail == "" {
-			return "", fmt.Errorf("model-manager: provider %q returned status %d", providerName, status)
+			return CompletionResult{}, fmt.Errorf("model-manager: provider %q returned status %d", providerName, status)
 		}
-		return "", fmt.Errorf("model-manager: provider %q returned status %d: %s", providerName, status, detail)
+		return CompletionResult{}, fmt.Errorf("model-manager: provider %q returned status %d: %s", providerName, status, detail)
 	}
 	var completion chatResponse
 	if err := json.Unmarshal(body, &completion); err != nil {
-		return "", fmt.Errorf("model-manager: decoding completion: %w", err)
+		return CompletionResult{}, fmt.Errorf("model-manager: decoding completion: %w", err)
 	}
 	if len(completion.Choices) == 0 {
-		return "", errors.New("model-manager: completion had no choices")
+		return CompletionResult{}, errors.New("model-manager: completion had no choices")
 	}
-	message := completion.Choices[0].Message
+	choice := completion.Choices[0]
+	message := choice.Message
+	text := message.Content
 	if directive, ok := DirectiveFromToolCalls(message.ToolCalls); ok {
-		return directive, nil
+		text = directive
 	}
-	return message.Content, nil
+	usage := Usage{
+		PromptTokens:     completion.Usage.PromptTokens,
+		CompletionTokens: completion.Usage.CompletionTokens,
+		TotalTokens:      completion.Usage.TotalTokens,
+		ReasoningTokens:  completion.Usage.CompletionTokensDetails.ReasoningTokens,
+	}
+	return CompletionResult{
+		Text:         text,
+		Reasoning:    message.ReasoningContent,
+		FinishReason: choice.FinishReason,
+		Usage:        usage,
+		Raw:          body,
+	}, nil
 }
