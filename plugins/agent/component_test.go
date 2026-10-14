@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DaviMGDev/core-agent/internal/keys"
 	chathistory "github.com/DaviMGDev/core-agent/plugins/chat-history"
 	contextmanager "github.com/DaviMGDev/core-agent/plugins/context-manager"
 	modelmanager "github.com/DaviMGDev/core-agent/plugins/model-manager"
@@ -465,3 +466,163 @@ func TestTerminalJobWakeProducesNonEmptyResponse(t *testing.T) {
 	}
 }
 
+
+// TestDynamicContextPayloadRespectsBudgetBoundaries proves that when tools and
+// a system prompt are present, the history turns are budgeted within the remaining
+// footprint so total tokens sent to the provider do not exceed configured limits.
+func TestDynamicContextPayloadRespectsBudgetBoundaries(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		body []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = b
+		mu.Unlock()
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	var log lockedBuffer
+	pub := &publishCapture{}
+	sched := runtime.New()
+	t.Cleanup(func() { _ = sched.Close() })
+
+	insert := func(comp runtime.Component, payload string) mcontext.FiberID {
+		t.Helper()
+		id, err := sched.Insert(comp, payload)
+		if err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		return id
+	}
+
+	endpoint, _ := json.Marshal(map[string]any{"providers": []any{map[string]any{
+		"name": "scripted", "endpoint": srv.URL, "models": []string{"test-model"},
+	}}})
+	agentPayload, _ := json.Marshal(map[string]any{
+		"conversation": "main", "model": "test-model", "budget": 1500,
+		"tools": []any{
+			map[string]any{"name": "bash", "description": "run shell commands in workspace"},
+			map[string]any{"name": "read", "description": "read contents of files"},
+		},
+	})
+	waitActive(t, sched, insert(providermanager.NewComponent(&log), string(endpoint)))
+	waitActive(t, sched, insert(modelmanager.NewComponent(&log), `{"models":[]}`))
+	hist := chathistory.NewComponent(&log)
+	waitActive(t, sched, insert(hist, "main"))
+	waitActive(t, sched, insert(contextmanager.NewComponent(&log), `{"budget":4096}`))
+	ag := NewComponent(&log, &scriptJobs{id: "job-1"}, pub.publish)
+	waitActive(t, sched, insert(ag, string(agentPayload)))
+
+	// Pre-fill history with several turns
+	for i := 0; i < 5; i++ {
+		_, _ = hist.Handle(ctx, []byte(`{"op":"append","conversation":"main","role":"user","text":"previous message"}`))
+		_, _ = hist.Handle(ctx, []byte(`{"op":"append","conversation":"main","role":"assistant","text":"previous answer"}`))
+	}
+
+	out := handleWake(t, ctx, ag, Wake{Line: "latest question"})
+	if out.Text != "ok" {
+		t.Fatalf("unexpected reply: %v", out.Text)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Calculate total tokens across all messages
+	totalTokens := 0
+	for _, m := range req.Messages {
+		totalTokens += EstimateTokens(m.Content)
+	}
+
+	// Total tokens should be safely bounded within the configured budget + reasonable headroom
+	if totalTokens > 1500 {
+		t.Fatalf("totalTokens %d exceeded configured budget ceiling 1500", totalTokens)
+	}
+}
+
+// TestRespondResultPropagatesRichTelemetry proves keys.ModelRegistry.RespondResult
+// preserves reasoning blocks and usage stats across the Memento key boundary.
+func TestRespondResultPropagatesRichTelemetry(t *testing.T) {
+	respJSON := `{
+		"choices": [{
+			"message": {
+				"role": "assistant",
+				"content": "the solution",
+				"reasoning_content": "step-by-step thinking trace"
+			},
+			"finish_reason": "stop"
+		}],
+		"usage": {
+			"prompt_tokens": 12,
+			"completion_tokens": 8,
+			"total_tokens": 20,
+			"completion_tokens_details": {"reasoning_tokens": 5}
+		}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, respJSON)
+	}))
+	defer srv.Close()
+
+	var log lockedBuffer
+	pub := &publishCapture{}
+	sched := runtime.New()
+	t.Cleanup(func() { _ = sched.Close() })
+
+	insert := func(comp runtime.Component, payload string) mcontext.FiberID {
+		t.Helper()
+		id, err := sched.Insert(comp, payload)
+		if err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		return id
+	}
+
+	endpoint, _ := json.Marshal(map[string]any{"providers": []any{map[string]any{
+		"name": "deepseek", "endpoint": srv.URL, "models": []string{"r1"},
+	}}})
+	waitActive(t, sched, insert(providermanager.NewComponent(&log), string(endpoint)))
+	mm := modelmanager.NewComponent(&log)
+	waitActive(t, sched, insert(mm, `{"models":[]}`))
+
+	ag := NewComponent(&log, &scriptJobs{}, pub.publish)
+	waitActive(t, sched, insert(chathistory.NewComponent(&log), "main"))
+	waitActive(t, sched, insert(contextmanager.NewComponent(&log), `{"budget":4096}`))
+	waitActive(t, sched, insert(ag, `{"conversation":"main","model":"r1"}`))
+
+	mr := ag.models
+	if mr == nil {
+		t.Fatal("agent models key not resolved")
+	}
+
+	res, err := mr.RespondResult("r1", []keys.ChatMessage{{Role: "user", Text: "solve"}}, nil)
+	if err != nil {
+		t.Fatalf("RespondResult failed: %v", err)
+	}
+	if res.Text != "the solution" {
+		t.Errorf("Text = %q, want 'the solution'", res.Text)
+	}
+	if res.Reasoning != "step-by-step thinking trace" {
+		t.Errorf("Reasoning = %q, want reasoning trace", res.Reasoning)
+	}
+	if res.FinishReason != "stop" {
+		t.Errorf("FinishReason = %q, want 'stop'", res.FinishReason)
+	}
+	if res.Usage.TotalTokens != 20 || res.Usage.ReasoningTokens != 5 {
+		t.Errorf("Usage = %+v, want total 20, reasoning 5", res.Usage)
+	}
+}

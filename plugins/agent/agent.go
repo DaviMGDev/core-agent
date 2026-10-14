@@ -39,6 +39,9 @@ type Config struct {
 	// FreezeJobs pauses the background job subsystem, forcing tools to execute
 	// synchronously within the turn and preventing early turn exits on jobs.
 	FreezeJobs   bool              `json:"freeze_jobs,omitempty"`
+	// PromptTemplate is an optional external template string (#45). When provided,
+	// it is rendered with dynamic placeholders: {{tools}} and {{honesty_rules}}.
+	PromptTemplate string          `json:"prompt_template,omitempty"`
 }
 
 // Normalized fills the defaults.
@@ -211,6 +214,13 @@ func parseLeadingDirective(s string) (Answer, bool) {
 	return Answer{}, false
 }
 
+// ProgressEvent represents intermediate progress or thought updates during multi-step tool turns (#40).
+type ProgressEvent struct {
+	Stage   string `json:"stage"` // "thought", "tool_call", "tool_result"
+	Tool    string `json:"tool,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
 // Deps are the operations one turn reaches: the composed system's pipeline
 // and the host-side job surface.
 type Deps struct {
@@ -221,6 +231,7 @@ type Deps struct {
 	Execute  func(tool string, args json.RawMessage) (any, error)
 	StartJob func(tool string, args json.RawMessage) (string, error)
 	Publish  func(text string) error
+	Progress func(event ProgressEvent) error
 }
 
 // TurnResult is what one turn produced.
@@ -237,26 +248,121 @@ type TurnResult struct {
 // per turn that is the agent's own content, never part of the record.
 const SystemRole = "system"
 
+// EstimateTokens provides a tokenizer-aware token estimation for text.
+func EstimateTokens(s string) int {
+	if len(s) == 0 {
+		return 0
+	}
+	tokens := 0
+	wordRun := 0
+	for _, r := range s {
+		if r <= 127 {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+				wordRun++
+			} else if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+				if wordRun > 0 {
+					tokens += (wordRun + 3) / 4
+					wordRun = 0
+				}
+			} else {
+				if wordRun > 0 {
+					tokens += (wordRun + 3) / 4
+					wordRun = 0
+				}
+				tokens++
+			}
+		} else {
+			if wordRun > 0 {
+				tokens += (wordRun + 3) / 4
+				wordRun = 0
+			}
+			if (r >= 0x4E00 && r <= 0x9FFF) || (r >= 0x3040 && r <= 0x30FF) {
+				tokens += 2
+			} else if r > 0x1F000 {
+				tokens += 2
+			} else {
+				tokens++
+			}
+		}
+	}
+	if wordRun > 0 {
+		tokens += (wordRun + 3) / 4
+	}
+	if tokens == 0 && len(s) > 0 {
+		tokens = 1
+	}
+	return tokens
+}
+
+// EstimateToolsFootprint calculates the approximate token footprint of presented tools.
+func EstimateToolsFootprint(tools []Tool) int {
+	total := 0
+	for _, t := range tools {
+		total += EstimateTokens(t.Name) + EstimateTokens(t.Description)
+		if len(t.Parameters) > 0 {
+			total += EstimateTokens(string(t.Parameters))
+		}
+		total += 10 // JSON schema envelope overhead
+	}
+	return total
+}
+
+// HistoryBudget calculates the remaining budget for conversation history
+// after deducting the system message and tool schema footprints (#37).
+// For small discrete budgets (e.g. turn counts where budget < 50), it preserves
+// the discrete turn count. For token-sized context budgets (>= 50), it deducts
+// the prompt and tool footprints to prevent provider context overflows.
+func HistoryBudget(totalBudget int, sysMsg string, tools []Tool) int {
+	if totalBudget <= 0 {
+		return totalBudget
+	}
+	if totalBudget < 50 {
+		return totalBudget
+	}
+	sysCost := EstimateTokens(sysMsg)
+	toolCost := EstimateToolsFootprint(tools)
+	remaining := totalBudget - sysCost - toolCost
+	if remaining < 100 {
+		return 100 // minimum headroom to allow at least the newest message
+	}
+	return remaining
+}
+
 // SystemMessage assembles the turn's system message from the activation
 // config and the presented tool surface: the agent's identity and only
 // capabilities, the honesty rule, the wake policy, and the failure policy.
-// The tools named are exactly the presented ones — hidden tools pruned,
-// renamed tools relabeled — so the model can neither reach nor claim more.
+// If cfg.PromptTemplate is configured, it renders the template using placeholders
+// {{tools}} and {{rules}}.
 func SystemMessage(cfg Config) Message {
 	presented := Present(cfg)
+	var toolsText strings.Builder
+	if len(presented) == 0 {
+		toolsText.WriteString("none are presented this turn — answer from the conversation, or answer with silence.")
+	} else {
+		for _, t := range presented {
+			toolsText.WriteString("  - " + t.Name)
+			if strings.TrimSpace(t.Description) != "" {
+				toolsText.WriteString(": " + t.Description)
+			}
+			toolsText.WriteString("\n")
+		}
+	}
+
+	if strings.TrimSpace(cfg.PromptTemplate) != "" {
+		rendered := cfg.PromptTemplate
+		rendered = strings.ReplaceAll(rendered, "{{tools}}", toolsText.String())
+		const constitutionalHonesty = "Do not claim capabilities you were not given, and never assert a result no tool returned.\nReport tool failures factually — tool, state, and error as observed — without inventing a diagnosis."
+		rendered = strings.ReplaceAll(rendered, "{{rules}}", constitutionalHonesty)
+		return Message{Role: SystemRole, Text: strings.TrimSpace(rendered)}
+	}
+
 	var b strings.Builder
 	b.WriteString("You are the turn loop of the core-agent system. Your only capabilities are the tools listed below")
 	if len(presented) == 0 {
 		b.WriteString(": none are presented this turn — answer from the conversation, or answer with silence.")
 	} else {
 		b.WriteString(":\n")
-		for _, t := range presented {
-			b.WriteString("  - " + t.Name)
-			if strings.TrimSpace(t.Description) != "" {
-				b.WriteString(": " + t.Description)
-			}
-			b.WriteString("\n")
-		}
+		b.WriteString(toolsText.String())
 		b.WriteString("Call a tool only when the wake asks for it or you cannot answer otherwise; a brief delegated to you is yours to answer — do not hand it to another agent.\n")
 	}
 	b.WriteString("Do not claim capabilities you were not given, and never assert a result no tool returned.\n")
@@ -315,7 +421,10 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 	if err := deps.Append("user", line); err != nil {
 		return TurnResult{}, err
 	}
-	recent, err := deps.Recent(cfg.Budget)
+	presented := Present(cfg)
+	sysMsg := SystemMessage(cfg)
+	historyBudget := HistoryBudget(cfg.Budget, sysMsg.Text, presented)
+	recent, err := deps.Recent(historyBudget)
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -323,8 +432,7 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 	if err != nil {
 		return TurnResult{}, err
 	}
-	presented := Present(cfg)
-	context := append([]Message{SystemMessage(cfg)}, projected...)
+	context := append([]Message{sysMsg}, projected...)
 
 	const maxSteps = 10
 	var lastToolResult string
@@ -343,6 +451,13 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 			}
 		}
 		if answer.Tool != "" {
+			if deps.Progress != nil {
+				_ = deps.Progress(ProgressEvent{
+					Stage:   "tool_call",
+					Tool:    answer.Tool,
+					Content: string(answer.Args),
+				})
+			}
 			if cfg.FreezeJobs {
 				targetTool := resolveCall(cfg, answer.Tool)
 				if targetTool == "jobs" || targetTool == "peep" || targetTool == "kill" {
@@ -368,6 +483,13 @@ func RunTurnWake(cfg Config, wake Wake, deps Deps) (TurnResult, error) {
 				callText := formatToolCall(answer.Tool, answer.Args)
 				resText := formatToolResult(res, execErr)
 				lastToolResult = resText
+				if deps.Progress != nil {
+					_ = deps.Progress(ProgressEvent{
+						Stage:   "tool_result",
+						Tool:    answer.Tool,
+						Content: resText,
+					})
+				}
 				context = append(context, Message{Role: RoleAssistant, Text: callText, ToolCallID: answer.ToolCallID})
 				context = append(context, Message{Role: RoleTool, Text: resText, ToolCallID: answer.ToolCallID})
 				continue

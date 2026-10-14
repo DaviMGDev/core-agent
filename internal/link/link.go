@@ -21,10 +21,20 @@ const (
 	KindJobs    Kind = "jobs"
 	KindPeek    Kind = "peek"
 	KindMessage Kind = "message"
-	KindLoaded  Kind = "loaded"
-	KindJob     Kind = "job"
-	KindError   Kind = "error"
+	KindLoaded   Kind = "loaded"
+	KindJob      Kind = "job"
+	KindProgress Kind = "progress"
+	KindError    Kind = "error"
 )
+
+// Progress represents intermediate execution status or thought streaming (#40).
+type Progress struct {
+	Kind    Kind   `json:"kind"`
+	Chat    string `json:"chat,omitempty"`
+	Stage   string `json:"stage"` // "thought", "tool_call", "tool_result"
+	Tool    string `json:"tool,omitempty"`
+	Content string `json:"content,omitempty"`
+}
 
 // Request is one line from the screen.
 type Request struct {

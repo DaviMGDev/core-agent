@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -765,3 +766,129 @@ func TestFreezeJobsRejectsCallsToJobToolsAsUnknown(t *testing.T) {
 
 
 
+
+func TestHistoryBudgetDeductsSystemAndToolsFootprint(t *testing.T) {
+	tools := []Tool{
+		{Name: "bash", Description: "run a shell command", Parameters: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}}}`)},
+	}
+	sysMsg := "This is a detailed system message instructing the agent."
+	totalBudget := 2000
+
+	hb := HistoryBudget(totalBudget, sysMsg, tools)
+	if hb >= totalBudget {
+		t.Fatalf("HistoryBudget %d should be strictly less than total budget %d", hb, totalBudget)
+	}
+	sysCost := EstimateTokens(sysMsg)
+	toolCost := EstimateToolsFootprint(tools)
+	expected := totalBudget - sysCost - toolCost
+	if hb != expected {
+		t.Fatalf("HistoryBudget = %d, want %d (sys: %d, tools: %d)", hb, expected, sysCost, toolCost)
+	}
+}
+
+func TestRunTurnPassesDeductedBudgetToRecent(t *testing.T) {
+	var requestedBudget int
+	cfg := Config{
+		Budget: 2000,
+		Tools:  []Tool{{Name: "bash", Description: "run a shell command"}},
+	}
+	deps := Deps{
+		Append: func(role, text string) error { return nil },
+		Recent: func(n int) ([]Message, error) {
+			requestedBudget = n
+			return []Message{{Role: "user", Text: "hi"}}, nil
+		},
+		Project: func(msgs []Message) ([]Message, error) { return msgs, nil },
+		Respond: func(text string, context []Message, tools []Tool) (Answer, error) {
+			return Answer{Text: "done"}, nil
+		},
+		Publish: func(text string) error { return nil },
+	}
+
+	_, err := RunTurn(cfg, "hi", deps)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if requestedBudget >= 2000 {
+		t.Fatalf("requestedBudget %d was not reduced from 2000", requestedBudget)
+	}
+	if requestedBudget <= 0 {
+		t.Fatalf("requestedBudget %d should be positive", requestedBudget)
+	}
+}
+
+func TestTurnProgressEventsEmittedDuringToolExecution(t *testing.T) {
+	var events []ProgressEvent
+	step := 0
+	deps := Deps{
+		Append: func(role, text string) error { return nil },
+		Recent: func(n int) ([]Message, error) { return nil, nil },
+		Project: func(msgs []Message) ([]Message, error) { return msgs, nil },
+		Respond: func(text string, context []Message, tools []Tool) (Answer, error) {
+			step++
+			if step == 1 {
+				return Answer{Tool: "echo", Args: json.RawMessage(`{"msg":"hi"}`)}, nil
+			}
+			return Answer{Text: "all done"}, nil
+		},
+		Execute: func(tool string, args json.RawMessage) (any, error) {
+			return map[string]any{"reply": "echoed"}, nil
+		},
+		Publish: func(text string) error { return nil },
+		Progress: func(e ProgressEvent) error {
+			events = append(events, e)
+			return nil
+		},
+	}
+
+	res, err := RunTurn(Config{}, "start", deps)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "all done" {
+		t.Fatalf("res.Text = %q, want 'all done'", res.Text)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 progress events (tool_call, tool_result), got %d: %+v", len(events), events)
+	}
+	if events[0].Stage != "tool_call" || events[0].Tool != "echo" {
+		t.Errorf("events[0] = %+v, want tool_call for echo", events[0])
+	}
+	if events[1].Stage != "tool_result" || events[1].Tool != "echo" {
+		t.Errorf("events[1] = %+v, want tool_result for echo", events[1])
+	}
+}
+
+func TestSystemMessageRendersExternalPromptTemplate(t *testing.T) {
+	customTmpl := "System Instructions:\nAvailable Tools:\n{{tools}}\nCore Rules:\n{{rules}}"
+	cfg := Config{
+		PromptTemplate: customTmpl,
+		Tools: []Tool{
+			{Name: "bash", Description: "run commands"},
+		},
+	}
+	msg := SystemMessage(cfg)
+	if !strings.Contains(msg.Text, "System Instructions:") {
+		t.Errorf("SystemMessage missing template header: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "- bash: run commands") {
+		t.Errorf("SystemMessage missing rendered tools: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "Report tool failures factually") {
+		t.Errorf("SystemMessage missing constitutional honesty rules: %s", msg.Text)
+	}
+}
+
+func TestFormatToolResultFactualErrorVerification(t *testing.T) {
+	// Proves errors are strictly serialized as observed JSON error objects
+	// without embellishments, simulated explanations, or invented diagnoses.
+	obsErr := errors.New("command failed with exit code 127: command not found")
+	res := formatToolResult(nil, obsErr)
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(res), &doc); err != nil {
+		t.Fatalf("formatToolResult output is not JSON: %v", err)
+	}
+	if doc["error"] != obsErr.Error() {
+		t.Fatalf("doc[error] = %q, want exactly %q", doc["error"], obsErr.Error())
+	}
+}
