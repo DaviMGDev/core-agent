@@ -83,6 +83,15 @@ func (s *Subscription) WaitIdle() {
 // Option configures a Bus.
 type Option func(*Bus)
 
+// Frozen returns an Option that freezes the notification subsystem (ADR 0002).
+// When frozen, SubscribeClocked behaves like Subscribe (no background clock goroutines
+// run), and events are delivered synchronously to subscribers during Publish.
+func Frozen(frozen bool) Option {
+	return func(b *Bus) {
+		b.frozen = frozen
+	}
+}
+
 // WithClock enables the notification clock: subscriptions created with
 // SubscribeClocked queue their events and flush them together on each period
 // boundary. A boundary with nothing queued wakes no one. after supplies the
@@ -109,6 +118,21 @@ type Bus struct {
 	clock  sync.Once
 	done   chan struct{}
 	closed bool
+	frozen bool
+}
+
+// IsFrozen reports whether the notification bus is frozen (ADR 0002).
+func (b *Bus) IsFrozen() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.frozen
+}
+
+// SetFrozen configures whether the notification bus is frozen (ADR 0002).
+func (b *Bus) SetFrozen(frozen bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.frozen = frozen
 }
 
 // New returns an empty bus.
@@ -129,8 +153,15 @@ func (b *Bus) Subscribe(topic string, waker Waker) *Subscription {
 
 // SubscribeClocked subscribes with the bus clock: queued events flush
 // together as one wake on each period boundary, and an empty boundary wakes
-// no one. Without a configured clock it behaves like Subscribe.
+// no one. Without a configured clock or when frozen (ADR 0002) it behaves
+// like Subscribe.
 func (b *Bus) SubscribeClocked(topic string, waker Waker) *Subscription {
+	b.mu.Lock()
+	frozen := b.frozen
+	b.mu.Unlock()
+	if frozen {
+		return b.subscribe(topic, waker, false)
+	}
 	s := b.subscribe(topic, waker, true)
 	b.startClock()
 	return s
@@ -203,23 +234,47 @@ func (b *Bus) Flush() {
 
 // Publish queues the event for every subscriber of the topic and returns to
 // the publisher without blocking; delivery is the host's work. Per-subscriber
-// order is publish order.
+// order is publish order. When frozen (ADR 0002), delivery is immediate and
+// synchronous.
 func (b *Bus) Publish(topic string, payload []byte) {
 	b.mu.Lock()
+	frozen := b.frozen
 	var scheduled []*Subscription
 	for _, s := range b.subs[topic] {
 		s.queue = append(s.queue, Event{Topic: topic, Payload: append([]byte(nil), payload...)})
 		if !s.scheduled {
 			s.scheduled = true
 			s.idle = make(chan struct{})
-			if !s.clocked || b.period <= 0 {
+			if frozen || !s.clocked || b.period <= 0 {
 				scheduled = append(scheduled, s)
 			}
 		}
 	}
 	b.mu.Unlock()
 	for _, s := range scheduled {
-		go b.deliver(s)
+		if frozen {
+			b.deliverSync(s)
+		} else {
+			go b.deliver(s)
+		}
+	}
+}
+
+// deliverSync synchronously delivers queued events to the subscriber waker.
+func (b *Bus) deliverSync(s *Subscription) {
+	for {
+		s.waker.Wake(s)
+		b.mu.Lock()
+		if len(s.queue) == 0 {
+			s.scheduled = false
+			if s.idle != nil {
+				close(s.idle)
+				s.idle = nil
+			}
+			b.mu.Unlock()
+			return
+		}
+		b.mu.Unlock()
 	}
 }
 

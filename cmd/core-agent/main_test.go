@@ -115,10 +115,11 @@ func sessionFrom(t *testing.T, resolved *config.Config, nick string) sessionConf
 		nick:       payloads.Nick,
 		providers:  payloads.Providers,
 		models:     payloads.Models,
-		history:    payloads.History,
-		context:    payloads.Context,
-		agent:      payloads.Agent,
-		legacyJobs: true,
+		history:             payloads.History,
+		context:             payloads.Context,
+		agent:               payloads.Agent,
+		legacyJobs:          true,
+		legacyNotifications: true,
 		credentials: func(name string) (string, bool) {
 			return resolved.Resolve(name, nil)
 		},
@@ -812,4 +813,21 @@ func TestDefaultSessionFrozenExcludesJobTools(t *testing.T) {
 		t.Fatalf("system message contains job ticks when frozen: %s", sys.Text)
 	}
 }
+
+func TestDefaultSessionFrozenNotifications(t *testing.T) {
+	resolved := testResolved(t)
+	cfg := sessionFrom(t, resolved, "tester")
+	cfg.legacyNotifications = false // ADR 0002 default
+
+	s, err := composeSession(context.Background(), cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("composeSession: %v", err)
+	}
+	defer s.Close()
+
+	if !s.bus.IsFrozen() {
+		t.Fatalf("expected bus to be frozen under ADR 0002 default")
+	}
+}
+
 

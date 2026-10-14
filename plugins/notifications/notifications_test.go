@@ -352,3 +352,31 @@ func TestClockCloseStopsBoundaries(t *testing.T) {
 		t.Fatalf("a closed bus woke someone: %v", wakes)
 	}
 }
+
+func TestFrozenBusDeliversSynchronouslyAndBypassesClock(t *testing.T) {
+	bus := New(WithClock(time.Hour, never), Frozen(true))
+	defer bus.Close()
+
+	if !bus.IsFrozen() {
+		t.Fatal("expected bus to be frozen")
+	}
+
+	w := &blockingWaker{}
+	// SubscribeClocked on a frozen bus degrades to unclocked immediate subscription
+	sub := bus.SubscribeClocked(TopicChatMessage, w)
+	if sub.clocked {
+		t.Fatal("expected subscription to not be clocked when bus is frozen")
+	}
+
+	// Publishing delivers synchronously without needing bus.Flush()
+	bus.Publish(TopicChatMessage, []byte(`{"text":"hello"}`))
+
+	wakes, _, _ := w.snapshot()
+	if len(wakes) != 1 {
+		t.Fatalf("expected 1 synchronous wake, got %d", len(wakes))
+	}
+	if len(wakes[0]) != 1 || string(wakes[0][0].Payload) != `{"text":"hello"}` {
+		t.Fatalf("unexpected wake payload: %+v", wakes[0])
+	}
+}
+

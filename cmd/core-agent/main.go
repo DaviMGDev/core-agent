@@ -60,6 +60,8 @@ type sessionConfig struct {
 	clockAfter func(time.Duration) <-chan time.Time
 	// legacyJobs runs the un-frozen background job subsystem. False by default under ADR 0001.
 	legacyJobs bool
+	// legacyNotifications runs the un-frozen background notification subsystem. False by default under ADR 0002.
+	legacyNotifications bool
 }
 
 // loadSession resolves the .core/ layer into a session configuration: it
@@ -140,6 +142,7 @@ func main() {
 	mock := flag.Bool("mock", false, "answer with an in-process mock LLM instead of calling a provider")
 	tui := flag.Bool("tui", false, "serve the TUI link (JSON lines) on stdin/stdout instead of the REPL")
 	legacyJobs := flag.Bool("legacy-jobs", false, "run with legacy asynchronous background jobs subsystem")
+	legacyNotifications := flag.Bool("legacy-notifications", false, "run with legacy asynchronous background notification queue")
 	flag.Parse()
 
 	cfg, err := loadSession(*mock, *nick)
@@ -148,6 +151,7 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.legacyJobs = *legacyJobs
+	cfg.legacyNotifications = *legacyNotifications
 	ctx := context.Background()
 	if *tui {
 		// Component logs go to stderr: stdout carries link lines only.
@@ -208,7 +212,10 @@ func composeSession(ctx context.Context, cfg sessionConfig, logs io.Writer) (*co
 		resolve = os.LookupEnv
 	}
 
-	bus := notifications.New(notifications.WithClock(cfg.clock, cfg.clockAfter))
+	bus := notifications.New(
+		notifications.WithClock(cfg.clock, cfg.clockAfter),
+		notifications.Frozen(!cfg.legacyNotifications),
+	)
 	manager := toolmanager.New(toolmanager.Options{Publisher: bus, Frozen: !cfg.legacyJobs})
 	// The gate spans attribution to release for every agent call, so a job
 	// scoped to one turn cannot answer for the next.
