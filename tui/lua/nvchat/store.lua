@@ -115,7 +115,7 @@ local function handle_line(line)
       -- Deduplication check: if previous message is a completed job entry with detail that
       -- is repeated in msg.text, collapse the completed job entry.
       local prev = #chat.messages > 0 and chat.messages[#chat.messages] or nil
-      if prev and prev.sender == "system" then
+      if prev and (prev.sender == "notice" or prev.sender == "system") then
         local job_prefix, job_detail = prev.body:match("^(job%s+[^:]+:%s*completed.-)%s*—%s*(.*)$")
         if job_prefix and job_detail and job_detail ~= "" then
           local clean_prev = clean_job_detail(job_detail)
@@ -155,7 +155,7 @@ local function handle_line(line)
       chat.loading = false
     end
   elseif msg.kind == "job" then
-    -- Job state changes join the transcript as system entries (tui.pseudo).
+    -- Job state changes join the transcript as notice entries (tui.pseudo, #43).
     if last then
       local detail = clean_job_detail(msg.detail)
       -- Check deduplication: if last message is from assistant and already spoke this detail
@@ -174,7 +174,7 @@ local function handle_line(line)
       if detail ~= "" and not collapsed then
         body = body .. " — " .. detail
       end
-      append(last, "system", body)
+      append(last, "notice", body)
       local q = pending[last.id]
       local h = (q and #q > 0) and q[1] or nil
       if h and h.on_reply then
@@ -196,6 +196,11 @@ local function handle_line(line)
     local h = table.remove(pending_peeks, 1)
     if h and h.on_peek then
       h.on_peek(msg)
+    end
+  elseif msg.kind == "progress" then
+    -- Progress updates provide intermediate status or thoughts (#40) without ending the turn.
+    if M.on_progress then
+      M.on_progress(msg)
     end
   elseif msg.kind == "error" then
     -- A failed turn is refused, not fatal: the link stays up. A pending

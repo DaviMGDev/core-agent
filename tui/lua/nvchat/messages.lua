@@ -56,7 +56,7 @@ function M.render()
     for _, block in ipairs(state.message_blocks) do
       local sender = block.message.sender
       local time = block.message.time
-      local sender_hl = sender == "system" and "NvchatSystem" or "NvchatSender"
+      local sender_hl = (sender == "notice" or sender == "system") and "NvchatSystem" or "NvchatSender"
       vim.api.nvim_buf_set_extmark(state.bufs.messages, ns, block.first - 1, 0, {
         end_col = #sender,
         hl_group = sender_hl,
